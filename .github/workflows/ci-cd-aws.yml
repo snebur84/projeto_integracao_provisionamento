@@ -3,7 +3,7 @@ name: Provision Pipeline # Nome do pipeline, ainda não definido corretamente.
 on:
   push:
     branches:
-      - main 
+      - prod-v1.0 # Definir a branch que irá disparar o pipeline. 
 
 jobs:
   build-and-deploy:
