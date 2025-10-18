@@ -78,6 +78,15 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'provision.wsgi.application'
 
+REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Provision API",
+    "DESCRIPTION": "Documentação OpenAPI da API de Provisionamento",
+    "VERSION": "1.0.0",
+}
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
