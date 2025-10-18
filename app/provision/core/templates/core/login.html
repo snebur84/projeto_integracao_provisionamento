@@ -1,0 +1,60 @@
+ url=https://github.com/snebur84/projeto_integracao_provisionamento/blob/7ac4091512f55bf88e0b4d01788fd7100075dc17/app/provision/core/templates/core/login.html
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Entrar — Provision</title>
+
+  <!-- CDN Bootstrap (padrão) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+
+  <style>
+    body { background:#f7f7f9; height:100vh; display:flex; align-items:center; justify-content:center; }
+    .login-card { width: 100%; max-width:420px; }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h3 class="card-title mb-3">Entrar</h3>
+
+        {% if form.errors %}
+          <div class="alert alert-danger">
+            Usuário ou senha inválidos. Verifique e tente novamente.
+          </div>
+        {% endif %}
+
+        <form method="post" class="needs-validation" novalidate>
+          {% csrf_token %}
+          <div class="mb-3">
+            <label for="id_username" class="form-label">Usuário</label>
+            {{ form.username|add_class:"form-control" }}
+          </div>
+
+          <div class="mb-3">
+            <label for="id_password" class="form-label">Senha</label>
+            {{ form.password|add_class:"form-control" }}
+          </div>
+
+          {% if next %}
+            <input type="hidden" name="next" value="{{ next }}">
+          {% endif %}
+
+          <div class="d-grid gap-2">
+            <button type="submit" class="btn btn-primary">Entrar</button>
+            <a href="{% url 'admin:login' %}" class="btn btn-outline-secondary">Entrar pelo Admin</a>
+          </div>
+        </form>
+      </div>
+
+      <div class="card-footer text-muted small">
+        A criação de usuários é permitida apenas por usuários staff via interface administrativa.
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+</body>
+</html>

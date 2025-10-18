@@ -1,6 +1,0 @@
-python-dotenv>=1.0.0
-asgiref==3.10.0
-Django==5.2.7
-djangorestframework==3.16.1
-PyMySQL==1.1.2
-sqlparse==0.5.3

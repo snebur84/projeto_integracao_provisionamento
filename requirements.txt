@@ -1,0 +1,7 @@
+Django>=5.2
+pymysql
+pymongo
+gunicorn
+drf-spectacular
+django-crispy-forms
+python-dotenv

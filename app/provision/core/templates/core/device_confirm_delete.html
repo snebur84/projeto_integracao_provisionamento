@@ -1,0 +1,14 @@
+{% extends "core/base.html" %}
+
+{% block title %}Confirmar remoção{% endblock %}
+
+{% block content %}
+<h1>Remover Dispositivo</h1>
+<p>Tem certeza que deseja remover o dispositivo <strong>{{ device }}</strong>?</p>
+
+<form method="post">
+  {% csrf_token %}
+  <button class="btn btn-danger" type="submit">Confirmar remoção</button>
+  <a class="btn btn-secondary" href="{% url 'core:device_list' %}">Cancelar</a>
+</form>
+{% endblock %}
