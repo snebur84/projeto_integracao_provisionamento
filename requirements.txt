@@ -5,3 +5,6 @@ gunicorn
 drf-spectacular
 django-crispy-forms
 python-dotenv
+django-crispy-forms
+crispy-bootstrap4
+cryptography

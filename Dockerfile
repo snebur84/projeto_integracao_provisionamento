@@ -9,7 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential gcc libpq-dev curl netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /app/app/provision
 
 # Copia requirements e instala
 # (assume que requirements.txt exista na raiz do projeto)

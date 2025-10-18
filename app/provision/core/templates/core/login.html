@@ -1,4 +1,3 @@
- url=https://github.com/snebur84/projeto_integracao_provisionamento/blob/7ac4091512f55bf88e0b4d01788fd7100075dc17/app/provision/core/templates/core/login.html
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -15,6 +14,9 @@
   </style>
 </head>
 <body>
+  {# carregar o templatetag customizado para add_class #}
+  {% load form_tags %}
+
   <div class="login-card">
     <div class="card shadow-sm">
       <div class="card-body">
