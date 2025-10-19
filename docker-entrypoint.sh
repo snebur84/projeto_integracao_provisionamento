@@ -52,11 +52,11 @@ if [ -z "$DJANGO_SETTINGS_MODULE" ]; then
 fi
 
 # Run migrations, collectstatic and create superuser if env provided
-echo "Applying database migrations..."
-python manage.py migrate --noinput
+echo "[entrypoint] rodando collectstatic"
+python manage.py collectstatic --noinput
 
-echo "Collecting static files..."
-python manage.py collectstatic --noinput --clear
+echo "[entrypoint] aplicando migrations"
+python manage.py migrate --noinput
 
 # Create superuser if requested (script checks env vars)
 echo "Creating superuser (if DJANGO_SUPERUSER_USERNAME/DJANGO_SUPERUSER_PASSWORD provided)..."
