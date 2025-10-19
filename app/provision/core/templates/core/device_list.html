@@ -31,7 +31,7 @@
     {% for device in devices %}
       <tr>
         <td><a href="{% url 'core:device_detail' device.pk %}">{{ device.identifier }}</a></td>
-        <td>{{ device.profile.name if device.profile else '-' }}</td>
+        <td>{{ device.profile.name }}</td>
         <td>{{ device.mac_address }}</td>
         <td>{{ device.ip_address|default:"-" }}</td>
         <td>{{ device.provisioned_at|default:"-" }}</td>
