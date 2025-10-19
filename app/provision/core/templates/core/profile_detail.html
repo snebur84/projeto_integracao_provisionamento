@@ -1,0 +1,36 @@
+{% extends "core/base.html" %}
+
+{% block title %}Perfil: {{ profile.name }}{% endblock %}
+
+{% block content %}
+<h1>Perfil: {{ profile.name }}</h1>
+
+<table class="table table-bordered mb-3">
+  <tr><th>SIP Server</th><td>{{ profile.sip_server|default:"-" }}</td></tr>
+  <tr><th>Port</th><td>{{ profile.port_server }}</td></tr>
+  <tr><th>Protocol</th><td>{{ profile.protocol_type }}</td></tr>
+  <tr><th>Template Ref</th><td>{{ profile.template_ref|default:"-" }}</td></tr>
+  <tr><th>Metadata</th><td><pre>{{ profile.metadata|default:"{}" }}</pre></td></tr>
+</table>
+
+<h3>Dispositivos</h3>
+<table class="table table-striped">
+  <thead><tr><th>Identifier</th><th>MAC</th><th>Display</th><th>Attempts</th><th></th></tr></thead>
+  <tbody>
+    {% for d in devices %}
+      <tr>
+        <td><a href="{% url 'core:device_detail' d.pk %}">{{ d.identifier }}</a></td>
+        <td>{{ d.mac_address }}</td>
+        <td>{{ d.display_name }}</td>
+        <td>{{ d.attempts_provisioning }}</td>
+        <td><a class="btn btn-sm btn-outline-secondary" href="{% url 'core:device_update' d.pk %}">Editar</a></td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5">Nenhum dispositivo associado.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<a class="btn btn-secondary" href="{% url 'core:profile_edit' profile.pk %}">Editar Perfil</a>
+<a class="btn btn-outline-secondary" href="{% url 'core:profile_list' %}">Voltar</a>
+{% endblock %}

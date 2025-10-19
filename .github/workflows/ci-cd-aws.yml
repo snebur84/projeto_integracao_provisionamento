@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - prod-v1.0
+  workflow_dispatch: {} 
 
 jobs:
   build-and-deploy:
@@ -30,7 +31,8 @@ jobs:
         ECR_REPOSITORY: repositorio_generico
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+        # build a imagem usando o Dockerfile na raiz (ajuste se o Dockerfile estiver em outro local)
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
     - name: Fill in the new image ID in the ECS task definition
@@ -48,7 +50,3 @@ jobs:
         service: seu-servico-ecs
         cluster: seu-cluster-ecs
         wait-for-service-stability: true
-
-    # Adicione variáveis de ambiente para MongoDB e MySQL no arquivo .env e configure os secrets AWS no repositório.
-    # O ambiente Docker deve conter serviços para MySQL, MongoDB e Django.
-    # A branch de produção continua sendo 'prod-v1.0' (não alterada).
