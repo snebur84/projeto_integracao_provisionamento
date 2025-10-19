@@ -10,6 +10,12 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import F
 
+# OAuth2 auth helper (django-oauth-toolkit)
+try:
+    from oauth2_provider.contrib.rest_framework import OAuth2Authentication
+except Exception:
+    OAuth2Authentication = None
+
 logger = logging.getLogger(__name__)
 
 # Lazy import helpers to avoid circular import at module import time
@@ -177,23 +183,53 @@ def _sanitize_filename(name):
 )
 @require_GET
 def download_config(request, filename=None):
+    """
+    Endpoint principal para download de configuração.
+    Autenticação:
+      - Primeiro tenta autenticar via OAuth2 Bearer token (django-oauth-toolkit). Requer escopo 'provision' ou 'read'.
+      - Se não houver token ou escopo insuficiente, faz fallback para PROVISION_API_KEY (se configurada).
+    """
     DeviceConfig, Provisioning, DeviceProfile = _get_models()
-    # Optional API key enforcement
-    key_check = _require_api_key(request)
-    if key_check:
-        # record forbidden attempt
-        try:
-            Provisioning.objects.create(
-                mac_address="",
-                identifier="",
-                status=Provisioning.STATUS_FORBIDDEN,
-                user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
-                notes="API key missing or invalid"
-            )
-        except Exception:
-            logger.exception("Failed to record forbidden provisioning attempt (no API key).")
-        return key_check
 
+    # 1) Tentar autenticar via OAuth2 (se disponível)
+    oauth_user = None
+    oauth_token = None
+    if OAuth2Authentication is not None:
+        try:
+            auth = OAuth2Authentication()
+            auth_result = auth.authenticate(request)
+            if auth_result:
+                oauth_user, oauth_token = auth_result  # (user, token)
+                # token.scope é uma string com scopes separados por espaços (AccessToken model)
+                token_scopes = set(getattr(oauth_token, "scope", "").split())
+                if not ({"provision", "read"} & token_scopes):
+                    # scope insuficiente - ignore OAuth auth and fallback to API key
+                    logger.warning("OAuth2 token present but missing required scope (need 'provision' or 'read')")
+                    oauth_user = None
+                    oauth_token = None
+        except Exception as exc:
+            logger.exception("OAuth2 authentication attempt failed: %s", exc)
+            oauth_user = None
+            oauth_token = None
+
+    # 2) Se não autenticado por OAuth, verificar API key (fallback)
+    if oauth_user is None:
+        key_check = _require_api_key(request)
+        if key_check:
+            # registro de tentativa forbidden (sem device)
+            try:
+                Provisioning.objects.create(
+                    mac_address="",
+                    identifier="",
+                    status=Provisioning.STATUS_FORBIDDEN,
+                    user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
+                    notes="API key missing or invalid"
+                )
+            except Exception:
+                logger.exception("Failed to record forbidden provisioning attempt (no API key).")
+            return key_check
+
+    # 3) a partir daqui: autenticação permitida (via OAuth ou API key)
     ua_data = parse_user_agent(request)
     if not ua_data:
         try:

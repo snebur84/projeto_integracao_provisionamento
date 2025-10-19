@@ -132,6 +132,27 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "Provision API",
     "DESCRIPTION": "API de Provisionamento - documentação OpenAPI gerada pelo drf-spectacular.",
     "VERSION": "1.0.0",
+    # Declare OAuth2 security scheme (client credentials)
+    "COMPONENTS": {
+        "securitySchemes": {
+            "oauth2": {
+                "type": "oauth2",
+                "flows": {
+                    "clientCredentials": {
+                        "tokenUrl": "/o/token/",
+                        "scopes": {
+                            "read": "Read scope",
+                            "write": "Write scope",
+                            "provision": "Access device provisioning endpoints",
+                            "admin": "Admin-level access",
+                        },
+                    }
+                },
+            }
+        }
+    },
+    # By default add oauth2 security to operations; you may restrict in specific views if needed
+    "SECURITY": [{"oauth2": ["provision", "read"]}],
 }
 
 # ---------------------------------------------------------------------
