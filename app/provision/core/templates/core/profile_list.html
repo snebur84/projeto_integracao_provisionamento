@@ -1,34 +1,50 @@
 {% extends "core/base.html" %}
 
-{% block title %}Perfis de Dispositivo{% endblock %}
+{% block title %}Perfis{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1>Perfis</h1>
-  <a class="btn btn-primary" href="{% url 'core:profile_create' %}">Novo Perfil</a>
+  <div>
+    <a class="btn btn-primary" href="{% url 'core:profile_create' %}">Novo Perfil</a>
+  </div>
 </div>
 
-<table class="table table-striped">
+<form method="get" class="mb-3">
+  <div class="input-group">
+    <input type="search" name="q" value="{{ q }}" class="form-control" placeholder="Buscar por nome ou SIP server...">
+    <button class="btn btn-outline-secondary" type="submit">Buscar</button>
+  </div>
+</form>
+
+<table class="table table-striped table-hover">
   <thead>
     <tr>
       <th>Nome</th>
       <th>SIP Server</th>
-      <th>Protocol</th>
       <th>Template Ref</th>
+      <th>Voice Codecs</th>
+      <th>NTP</th>
+      <th>Dispositivos</th>
       <th></th>
     </tr>
   </thead>
   <tbody>
-    {% for p in profiles %}
+    {% for profile in profiles %}
       <tr>
-        <td><a href="{% url 'core:profile_detail' p.pk %}">{{ p.name }}</a></td>
-        <td>{{ p.sip_server|default:"-" }}</td>
-        <td>{{ p.protocol_type }}</td>
-        <td>{{ p.template_ref|default:"-" }}</td>
-        <td><a class="btn btn-sm btn-outline-primary" href="{% url 'core:profile_edit' p.pk %}">Editar</a></td>
+        <td><a href="{% url 'core:profile_detail' profile.pk %}">{{ profile.name }}</a></td>
+        <td>{{ profile.sip_server|default:"-" }}</td>
+        <td>{{ profile.template_ref|default:"-" }}</td>
+        <td>{{ profile.voice_codecs|default:"-" }}</td>
+        <td>{{ profile.ntp_server|default:"-" }}</td>
+        <td>{{ profile.devices.count }}</td>
+        <td class="text-end">
+          <a class="btn btn-sm btn-outline-secondary" href="{% url 'core:profile_detail' profile.pk %}">Ver</a>
+          <a class="btn btn-sm btn-outline-primary" href="{% url 'core:profile_edit' profile.pk %}">Editar</a>
+        </td>
       </tr>
     {% empty %}
-      <tr><td colspan="5">Nenhum perfil encontrado.</td></tr>
+      <tr><td colspan="7">Nenhum perfil encontrado.</td></tr>
     {% endfor %}
   </tbody>
 </table>

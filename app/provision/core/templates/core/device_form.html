@@ -11,10 +11,24 @@
     <div class="col-md-8">
       {% for field in form.visible_fields %}
         <div class="mb-3">
-          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
+          <label class="form-label" for="{{ field.id_for_label }}">
+            {{ field.label }}{% if field.field.required %} *{% endif %}
+            {% comment %} Indicar mapping de placeholder quando relevante {% endcomment %}
+            {% if field.name == "identifier" %}
+              <small class="text-muted"> — placeholder: %%account%%</small>
+            {% elif field.name == "display_name" %}
+              <small class="text-muted"> — placeholder: %%displayname%%</small>
+            {% elif field.name == "user_register" %}
+              <small class="text-muted"> — placeholder: %%user%%</small>
+            {% elif field.name == "passwd_register" %}
+              <small class="text-muted"> — placeholder: %%passwd%%</small>
+            {% elif field.name == "mac_address" %}
+              <small class="text-muted"> — placeholder: %%macaddress%%</small>
+            {% endif %}
+          </label>
           {{ field }}
           {% if field.help_text %}
-            <small class="form-text text-muted">{{ field.help_text }}</small>
+            <div class="form-text">{{ field.help_text }}</div>
           {% endif %}
           {% for error in field.errors %}
             <div class="text-danger small">{{ error }}</div>
@@ -25,7 +39,7 @@
   </div>
 
   <div class="d-flex gap-2">
-    <button class="btn btn-primary" type="submit">Salvar</button>
+    <button class="btn btn-success" type="submit">Salvar</button>
     <a class="btn btn-secondary" href="{% url 'core:device_list' %}">Cancelar</a>
   </div>
 </form>

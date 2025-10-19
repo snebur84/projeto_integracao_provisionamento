@@ -5,12 +5,14 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1>Dispositivos</h1>
-  <a class="btn btn-primary" href="{% url 'core:device_create' %}">Novo Dispositivo</a>
+  <div>
+    <a class="btn btn-primary" href="{% url 'core:device_create' %}">Novo Dispositivo</a>
+  </div>
 </div>
 
 <form method="get" class="mb-3">
   <div class="input-group">
-    <input type="search" name="q" value="{{ q }}" class="form-control" placeholder="Buscar por identifier ou model...">
+    <input type="search" name="q" value="{{ q }}" class="form-control" placeholder="Buscar por identifier, MAC ou display name...">
     <button class="btn btn-outline-secondary" type="submit">Buscar</button>
   </div>
 </form>
@@ -19,8 +21,9 @@
   <thead>
     <tr>
       <th>Identifier</th>
-      <th>Model</th>
+      <th>Profile</th>
       <th>MAC</th>
+      <th>Display</th>
       <th>IP</th>
       <th>Provisionado em</th>
       <th>Attempts</th>
@@ -31,19 +34,50 @@
     {% for device in devices %}
       <tr>
         <td><a href="{% url 'core:device_detail' device.pk %}">{{ device.identifier }}</a></td>
-        <td>{{ device.profile.name }}</td>
-        <td>{{ device.mac_address }}</td>
-        <td>{{ device.ip_address|default:"-" }}</td>
-        <td>{{ device.provisioned_at|default:"-" }}</td>
-        <td>{{ device.attempts_provisioning }}</td>
         <td>
-          <a href="{% url 'core:device_update' device.pk %}" class="btn btn-sm btn-outline-secondary">Editar</a>
+          {% if device.profile %}
+            <a href="{% url 'core:profile_detail' device.profile.pk %}">{{ device.profile.name }}</a>
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>{{ device.mac_address }}</td>
+        <td>{{ device.display_name|default:"-" }}</td>
+        <td>{{ device.ip_address|default:device.public_ip|default:"-" }}</td>
+        <td>{% if device.provisioned_at %}{{ device.provisioned_at|date:"Y-m-d H:i" }}{% else %}-{% endif %}</td>
+        <td>{{ device.attempts_provisioning }}</td>
+        <td class="text-end">
+          <a class="btn btn-sm btn-outline-secondary" href="{% url 'core:device_detail' device.pk %}">Ver</a>
+          <a class="btn btn-sm btn-outline-primary" href="{% url 'core:device_update' device.pk %}">Editar</a>
+          <form method="post" action="{% url 'core:device_delete' device.pk %}" style="display:inline;">
+            {% csrf_token %}
+            <button class="btn btn-sm btn-danger" type="submit" onclick="return confirm('Confirma remoção do dispositivo {{ device.identifier }}?')">Remover</button>
+          </form>
         </td>
       </tr>
     {% empty %}
-      <tr><td colspan="7">Nenhum dispositivo encontrado.</td></tr>
+      <tr><td colspan="8">Nenhum dispositivo encontrado.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 
+{% if is_paginated %}
+<nav aria-label="Page navigation">
+  <ul class="pagination">
+    {% if page_obj.has_previous %}
+      <li class="page-item"><a class="page-link" href="?q={{ q }}&page={{ page_obj.previous_page_number }}">Anterior</a></li>
+    {% else %}
+      <li class="page-item disabled"><span class="page-link">Anterior</span></li>
+    {% endif %}
+
+    <li class="page-item disabled"><span class="page-link">Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span></li>
+
+    {% if page_obj.has_next %}
+      <li class="page-item"><a class="page-link" href="?q={{ q }}&page={{ page_obj.next_page_number }}">Próxima</a></li>
+    {% else %}
+      <li class="page-item disabled"><span class="page-link">Próxima</span></li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
 {% endblock %}

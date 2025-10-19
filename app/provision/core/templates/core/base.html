@@ -1,3 +1,4 @@
+{% load static %}
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -14,6 +15,18 @@
     /* pequenos estilos padrão para layout */
     body { padding-top: 60px; }
     .container { max-width: 1100px; }
+    /* ajustar botão do logout para parecer link na navbar */
+    .nav-logout-btn {
+      border: none;
+      background: none;
+      padding: 0;
+      margin: 0;
+      color: var(--bs-light);
+    }
+    .nav-logout-btn:hover {
+      color: #fff;
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -26,16 +39,26 @@
       <div class="collapse navbar-collapse" id="navbarsExample">
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
           <li class="nav-item"><a class="nav-link" href="{% url 'core:device_list' %}">Dispositivos</a></li>
-          <li class="nav-item"><a class="nav-link" href="{% url 'core:device_create' %}">Novo Dispositivo</a></li>
+          <li class="nav-item"><a class="nav-link" href="{% url 'core:profile_list' %}">Perfis</a></li>
+          <li class="nav-item"><a class="nav-link" href="{% url 'core:template_list' %}">Templates</a></li>
         </ul>
 
         <ul class="navbar-nav ms-auto">
-          {# admin site link (usuários são gerenciados no admin) #}
+          {# link para administração geral #}
           <li class="nav-item"><a class="nav-link" href="{% url 'admin:index' %}">Admin</a></li>
-          <li class="nav-item"><a class="nav-link" href="{% url 'core:user_create' %}">Criar Usuário</a></li>
+
+          {# mostrar login/logout dependendo do estado do usuário #}
           {% if user.is_authenticated %}
-            <li class="nav-item"><span class="nav-link">Olá, {{ user.get_username }}</span></li>
-            <li class="nav-item"><a class="nav-link" href="{% url 'admin:logout' %}">Sair</a></li>
+            <li class="nav-item d-flex align-items-center me-2">
+              <span class="nav-link">Olá, {{ user.get_username }}</span>
+            </li>
+            <li class="nav-item">
+              {# usar POST para logout para evitar 405; admin:logout exige confirmação POST #}
+              <form method="post" action="{% url 'admin:logout' %}" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="nav-link nav-logout-btn">Sair</button>
+              </form>
+            </li>
           {% else %}
             <li class="nav-item"><a class="nav-link" href="{% url 'admin:login' %}">Entrar</a></li>
           {% endif %}

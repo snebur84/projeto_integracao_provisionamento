@@ -15,30 +15,11 @@
   <div class="col-md-6">
     <table class="table table-bordered">
       <tbody>
-        <tr><th>Identifier</th><td>{{ device.identifier }}</td></tr>
-        <tr><th>Profile</th>
-          <td>
-            {% if device.profile %}
-              <a href="{% url 'core:profile_detail' device.profile.pk %}">{{ device.profile.name }}</a>
-            {% else %}
-              —
-            {% endif %}
-          </td>
-        </tr>
-        <tr><th>MAC</th><td>{{ device.mac_address }}</td></tr>
-        <tr><th>Display name</th><td>{{ device.display_name|default:"-" }}</td></tr>
-        <tr><th>User register</th><td>{{ device.user_register|default:"-" }}</td></tr>
-        <tr><th>Provisioned at</th><td>{{ device.provisioned_at|default:"-" }}</td></tr>
-        <tr><th>Attempts</th><td>{{ device.attempts_provisioning }}</td></tr>
-        <tr><th>Exported to RPS</th><td>{{ device.exported_to_rps|yesno:"Yes,No" }}</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="col-md-6">
-    <h5>Endereços IP</h5>
-    <table class="table table-sm table-bordered mb-3">
-      <tbody>
+        <tr><th>Identifier (%%account%%)</th><td>{{ device.identifier }}</td></tr>
+        <tr><th>Display name (%%displayname%%)</th><td>{{ device.display_name|default:'-' }}</td></tr>
+        <tr><th>User (%%user%%)</th><td>{{ device.user_register|default:'-' }}</td></tr>
+        <tr><th>Passwd (%%passwd%%)</th><td>{% if device.passwd_register %}•••••{% else %}-{% endif %}</td></tr>
+        <tr><th>MAC (%%macaddress%%)</th><td>{{ device.mac_address|default:'-' }}</td></tr>
         <tr><th>IP (compat)</th><td>{{ device.ip_address|default:"-" }}</td></tr>
         <tr><th>IP Pública</th><td>{{ device.public_ip|default:"-" }}</td></tr>
         <tr><th>IP Privada</th><td>{{ device.private_ip|default:"-" }}</td></tr>
@@ -46,56 +27,19 @@
     </table>
 
     <h5>Perfil / Configurações</h5>
+    {% if device.profile %}
     <table class="table table-sm table-bordered">
       <tbody>
-        <tr><th>SIP Server</th><td>{{ device.profile.sip_server if device.profile else '-' }}</td></tr>
-        <tr><th>Port</th><td>{{ device.profile.port_server if device.profile else '-' }}</td></tr>
-        <tr><th>Protocol</th><td>{{ device.profile.protocol_type if device.profile else '-' }}</td></tr>
-        <tr><th>Template Ref</th><td>{{ device.profile.template_ref|default:"-" if device.profile else "-" }}</td></tr>
+        <tr><th>Profile</th><td><a href="{% url 'core:profile_detail' device.profile.pk %}">{{ device.profile.name }}</a></td></tr>
+        <tr><th>SIP Server</th><td>{{ device.profile.sip_server }}</td></tr>
+        <tr><th>Port</th><td>{{ device.profile.port_server }}</td></tr>
+        <tr><th>Protocol</th><td>{{ device.profile.protocol_type }}</td></tr>
+        <tr><th>Template Ref</th><td>{{ device.profile.template_ref|default:"-" }}</td></tr>
       </tbody>
     </table>
-  </div>
-</div>
-
-<div class="mt-4">
-  <h3>Últimas tentativas de provisionamento</h3>
-  {% if device.provisionings.exists %}
-    <table class="table table-striped table-hover">
-      <thead>
-        <tr>
-          <th>Quando</th>
-          <th>Status</th>
-          <th>Vendor / Model / Version</th>
-          <th>IPs (public / private)</th>
-          <th>Arquivo</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in device.provisionings.all|slice:":20" %}
-          <tr>
-            <td>{{ p.created_at }}</td>
-            <td>
-              {% if p.status == "ok" %}<span class="text-success">OK</span>
-              {% elif p.status == "forbidden" %}<span class="text-danger">Forbidden</span>
-              {% else %}<span class="text-warning">{{ p.get_status_display }}</span>{% endif %}
-            </td>
-            <td>{{ p.vendor|default:"-" }} / {{ p.model|default:"-" }} / {{ p.version|default:"-" }}</td>
-            <td>{{ p.public_ip|default:"-" }} / {{ p.private_ip|default:"-" }}</td>
-            <td>{{ p.filename|default:"-" }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if device.provisionings.count > 20 %}
-      <div class="small text-muted">Mostrando as 20 tentativas mais recentes.</div>
+    {% else %}
+      <p class="text-muted">Nenhum perfil associado.</p>
     {% endif %}
-  {% else %}
-    <div class="alert alert-secondary">Nenhuma tentativa de provisionamento registrada para este dispositivo.</div>
-  {% endif %}
-</div>
-
-<div class="mt-4">
-  <h3>Metadados</h3>
-  <pre class="small bg-light p-3">{{ device.metadata|default:"{}" }}</pre>
+  </div>
 </div>
 {% endblock %}

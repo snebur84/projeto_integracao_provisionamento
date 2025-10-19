@@ -17,4 +17,11 @@ urlpatterns = [
     path("profiles/create/", views.profile_create_or_update, name="profile_create"),
     path("profiles/<int:pk>/", views.profile_detail, name="profile_detail"),
     path("profiles/<int:pk>/edit/", views.profile_create_or_update, name="profile_edit"),
+
+    # Routes to handle templates
+    path("templates/import/", views.import_template, name="import_template"),
+    path("templates/", views.template_list, name="template_list"),
+    path("templates/<str:name>/", views.template_detail, name="template_detail"),
+    path("templates/<str:name>/download/", views.template_download, name="template_download"),
+    path("templates/<str:name>/delete/", views.template_delete, name="template_delete"),
 ]

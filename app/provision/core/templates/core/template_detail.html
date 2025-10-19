@@ -1,0 +1,26 @@
+{% extends "core/base.html" %}
+
+{% block title %}Template: {{ doc.id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1>Template: {{ doc.id }}</h1>
+  <div>
+    <a class="btn btn-sm btn-outline-primary" href="{% url 'core:template_download' doc.id %}">Baixar</a>
+    <a class="btn btn-sm btn-danger" href="{% url 'core:template_list' %}">Voltar</a>
+  </div>
+</div>
+
+<table class="table table-sm mb-3">
+  <tbody>
+    <tr><th>Nome (chave)</th><td>{{ doc.id }}</td></tr>
+    <tr><th>Arquivo</th><td>{{ doc.filename|default:"-" }}</td></tr>
+    <tr><th>Tipo</th><td>{{ doc.file_type|default:"-" }}</td></tr>
+    <tr><th>Enviado por</th><td>{{ doc.uploaded_by|default:"-" }}</td></tr>
+    <tr><th>Enviado em</th><td>{% if doc.uploaded_at %}{{ doc.uploaded_at|date:"Y-m-d H:i" }}{% else %}-{% endif %}</td></tr>
+  </tbody>
+</table>
+
+<h4>Conteúdo</h4>
+<pre style="white-space:pre-wrap; word-break:break-word; background:#f8f9fa; padding:12px; border-radius:4px; border:1px solid #e2e3e5;">{{ content }}</pre>
+{% endblock %}

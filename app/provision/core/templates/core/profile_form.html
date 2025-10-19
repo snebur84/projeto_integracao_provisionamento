@@ -14,7 +14,7 @@
         <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
         {{ field }}
         {% if field.help_text %}
-          <small class="form-text text-muted">{{ field.help_text }}</small>
+          <div class="form-text">{{ field.help_text }}</div>
         {% endif %}
         {% for error in field.errors %}
           <div class="text-danger small">{{ error }}</div>
@@ -24,15 +24,16 @@
   </div>
 
   <h3>Dispositivos (mestre/detalhe)</h3>
+
   {{ formset.management_form }}
   <table class="table table-sm">
     <thead>
       <tr>
-        <th>Identifier</th>
-        <th>MAC</th>
-        <th>Display name</th>
-        <th>User</th>
-        <th>Passwd</th>
+        <th>Identifier (%%account%%)</th>
+        <th>MAC (%%macaddress%%)</th>
+        <th>Display name (%%displayname%%)</th>
+        <th>User (%%user%%)</th>
+        <th>Passwd (%%passwd%%)</th>
         <th></th>
       </tr>
     </thead>
