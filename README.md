@@ -151,11 +151,3 @@ Contribuição
 
 Contato
 - Desenvolvedor/owner: @snebur84 (GitHub).
-
------
-Notas finais
-Este README cobre o estado atual após as alterações recentes (modelagem mestre/detalhe, Provisioning separado e integração inicial com OAuth2). Se quiser, eu:
-- gero um exemplo de script de migração de dados para popular DeviceProfile a partir de DeviceConfig existentes;
-- adiciono exemplos de testes (pytest) para OAuth2 flows e endpoints;
-- removo o fallback PROVISION_API_KEY e atualizo a documentação para exigir somente OAuth2.
-Qual opção prefere que eu gere a seguir?
