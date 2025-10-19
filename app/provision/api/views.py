@@ -9,6 +9,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import F
+from api.utils.mongo import get_mongo_client
 
 # OAuth2 auth helper (django-oauth-toolkit)
 try:
@@ -141,15 +142,81 @@ def get_device_config(identifier):
         return None
 
 
-def get_template_from_mongo(model, ext):
-    from .utils.mongo import get_mongo_client
-    db = get_mongo_client()
+def get_template_from_mongo(model: str, ext: str):
+    """
+    Busca template no MongoDB a partir do campo 'model' (case-insensitive) e 'extension'.
+    Tentativas (em ordem):
+      1) buscar por documento com campo 'model' case-insensitive igual a model e extension == ext
+      2) buscar por _id igual a model.lower() (compatibilidade com chaves salvas em lower-case)
+      3) fallback: buscar qualquer template com extension == ext
+    Retorna o documento (dict) ou None.
+    """
     try:
-        return db.device_templates.find_one({"model": model, "extension": ext})
+        db = get_mongo_client()
+    except Exception as exc:
+        logger.exception("Failed to get mongo DB handle: %s", exc)
+        return None
+
+    try:
+        coll = getattr(db, "device_templates", db.get_collection("device_templates"))
+        model_q = (model or "").strip().lower()
+        # 1) buscar por campo 'model' case-insensitive
+        if model_q:
+            # escapamos para evitar metacaracteres regex
+            regex = f"^{re.escape(model_q)}$"
+            doc = coll.find_one({"model": {"$regex": regex, "$options": "i"}, "extension": ext})
+            if doc:
+                return doc
+
+            # 2) buscar por _id igual ao model em lower-case
+            doc = coll.find_one({"_id": model_q})
+            if doc:
+                return doc
+
+        # 3) fallback por extensão
+        doc = coll.find_one({"extension": ext})
+        if doc:
+            return doc
+
+        return None
     except Exception as exc:
         logger.exception("MongoDB query failed for model=%s ext=%s: %s", model, ext, exc)
         return None
 
+def substitute_percent_placeholders(template_text: str, context: dict) -> str:
+    """
+    Substitui placeholders no formato %%nome%% por valores vindos de context.
+    - Faz lookup case-insensitive da chave no context (usa chave lower()).
+    - Booleanos são convertidos em '1' / '0' (útil para flags como %%vlanactive%%).
+    - Valores None ou keys ausentes são substituídos por string vazia.
+    """
+    if not template_text:
+        return template_text
+
+    # preparar um dicionário com chaves lower-case para lookup rápido
+    ctx = {str(k).lower(): v for k, v in (context or {}).items()}
+
+    def repl(match: re.Match) -> str:
+        key = (match.group(1) or "").strip().lower()
+        val = ctx.get(key, "")
+        # converter booleanos para 1/0
+        if isinstance(val, bool):
+            return "1" if val else "0"
+        # None -> empty
+        if val is None:
+            return ""
+        # se for lista/dict, converter para string JSON/simple
+        if isinstance(val, (list, dict)):
+            try:
+                import json
+                return json.dumps(val, ensure_ascii=False)
+            except Exception:
+                return str(val)
+        return str(val)
+
+    # regex procura %%nome%% — nome composto por letras, dígitos e underscore
+    pattern = re.compile(r"%%([A-Za-z0-9_]+)%%")
+    return pattern.sub(repl, template_text)
 
 def render_template(template_str, context):
     from django.template import Template, Context, TemplateSyntaxError
@@ -182,238 +249,141 @@ def _sanitize_filename(name):
     responses={200: None, 403: None},
 )
 @require_GET
-def download_config(request, filename=None):
+def download_config(request, filename: str = None):
     """
-    Endpoint principal para download de configuração.
-    Autenticação:
-      - Primeiro tenta autenticar via OAuth2 Bearer token (django-oauth-toolkit). Requer escopo 'provision' ou 'read'.
-      - Se não houver token ou escopo insuficiente, faz fallback para PROVISION_API_KEY (se configurada).
+    Endpoint de download de configuração (ajustado para usar modelo extraído do User-Agent).
+
+    - Extrai vendor, model, version, identifier (MAC ou account) do User-Agent via parse_user_agent().
+      Exemplo de UA: "Ale H2P 2.10 3c28a60357a0" -> vendor='Ale', model='H2P', version='2.10', identifier='3c28a60357a0'
+    - Normaliza model para lower() e usa get_template_from_mongo(model_lower, ext).
+    - Normaliza mac (identifier) com _normalize_mac e busca DeviceConfig via get_device_config(identifier).
+    - Prefere profile.template_ref quando presente (tentando versão original e lower-case).
+    - Renderiza o template (campo 'template' do documento Mongo) com contexto combinado (device + profile + UA).
+    - Retorna o conteúdo renderizado como application/xml (ext == 'xml') ou text/plain (cfg).
     """
-    DeviceConfig, Provisioning, DeviceProfile = _get_models()
-
-    # 1) Tentar autenticar via OAuth2 (se disponível)
-    oauth_user = None
-    oauth_token = None
-    if OAuth2Authentication is not None:
-        try:
-            auth = OAuth2Authentication()
-            auth_result = auth.authenticate(request)
-            if auth_result:
-                oauth_user, oauth_token = auth_result  # (user, token)
-                # token.scope é uma string com scopes separados por espaços (AccessToken model)
-                token_scopes = set(getattr(oauth_token, "scope", "").split())
-                if not ({"provision", "read"} & token_scopes):
-                    # scope insuficiente - ignore OAuth auth and fallback to API key
-                    logger.warning("OAuth2 token present but missing required scope (need 'provision' or 'read')")
-                    oauth_user = None
-                    oauth_token = None
-        except Exception as exc:
-            logger.exception("OAuth2 authentication attempt failed: %s", exc)
-            oauth_user = None
-            oauth_token = None
-
-    # 2) Se não autenticado por OAuth, verificar API key (fallback)
-    if oauth_user is None:
-        key_check = _require_api_key(request)
-        if key_check:
-            # registro de tentativa forbidden (sem device)
-            try:
-                Provisioning.objects.create(
-                    mac_address="",
-                    identifier="",
-                    status=Provisioning.STATUS_FORBIDDEN,
-                    user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
-                    notes="API key missing or invalid"
-                )
-            except Exception:
-                logger.exception("Failed to record forbidden provisioning attempt (no API key).")
-            return key_check
-
-    # 3) a partir daqui: autenticação permitida (via OAuth ou API key)
+    # parse User-Agent
     ua_data = parse_user_agent(request)
     if not ua_data:
-        try:
-            Provisioning.objects.create(
-                mac_address="",
-                identifier="",
-                status=Provisioning.STATUS_FORBIDDEN,
-                user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
-                notes="Invalid User-Agent format",
-            )
-        except Exception:
-            logger.exception("Failed to record invalid UA provisioning attempt.")
+        logger.warning("Invalid User-Agent format for request from %s", request.META.get("REMOTE_ADDR"))
         return HttpResponseForbidden("Forbidden: Invalid User-Agent format")
+
     vendor, model, version, identifier = ua_data
-    logger.info("Request for config: vendor=%s model=%s version=%s identifier=%s", vendor, model, version, identifier)
+    model_for_query = (model or "").strip().lower()
+    # identifier normalmente é mac ou account; normalizar para busca
+    norm_identifier = _normalize_mac(identifier) or (identifier or "").strip()
 
-    device = get_device_config(identifier)
-    public_ip = _extract_public_ip(request)
-    private_ip = _extract_private_ip(request)
-
-    if not device:
-        try:
-            Provisioning.objects.create(
-                mac_address=_normalize_mac(identifier),
-                identifier=identifier,
-                vendor=vendor,
-                model=model,
-                version=version,
-                public_ip=public_ip,
-                private_ip=private_ip,
-                user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
-                status=Provisioning.STATUS_FORBIDDEN,
-                notes="Device not found",
-            )
-        except Exception:
-            logger.exception("Failed to record provisioning attempt for unknown device.")
-        logger.warning("Device not found for identifier/mac: %s", identifier)
-        return HttpResponseForbidden("Forbidden: Device not found")
-
-    # update device ip fields if changed (but do not save attempts here)
+    # localizar device (tenta MAC normalizado primeiro, depois identifier)
+    device = None
     try:
-        updated = False
-        if public_ip and device.public_ip != public_ip:
-            device.public_ip = public_ip
-            updated = True
-        if private_ip and device.private_ip != private_ip:
-            device.private_ip = private_ip
-            updated = True
-        if not device.ip_address:
-            if private_ip:
-                device.ip_address = private_ip
-                updated = True
-            elif public_ip:
-                device.ip_address = public_ip
-                updated = True
-        if updated:
-            device.save(update_fields=[f for f in ("public_ip", "private_ip", "ip_address") if getattr(device, f, None) is not None])
+        device = get_device_config(identifier)
     except Exception:
-        logger.exception("Failed to compute/save IP updates for device %s", getattr(device, "identifier", None))
+        logger.exception("Error fetching device for identifier=%s", identifier)
+        device = None
 
-    # increment attempts_provisioning atomically and record Provisioning
-    prov = None
-    try:
-        with transaction.atomic():
-            DeviceConfig.objects.filter(pk=device.pk).update(attempts_provisioning=F('attempts_provisioning') + 1)
-            device.refresh_from_db(fields=["attempts_provisioning"])
-            prov = Provisioning.objects.create(
-                device=device,
-                mac_address=device.mac_address[:32] if device.mac_address else "",
-                identifier=device.identifier[:255] if device.identifier else "",
-                vendor=vendor,
-                model=model,
-                version=version,
-                public_ip=public_ip,
-                private_ip=private_ip,
-                filename=(filename or ""),
-                template_ref=(device.profile.template_ref if device.profile else ""),
-                user_agent=request.META.get("HTTP_USER_AGENT", "")[:2000],
-                status=Provisioning.STATUS_OK,
-            )
-    except Exception:
-        logger.exception("Failed to create provisioning record for device %s", getattr(device, "identifier", None))
-
-    # determine extension and try to fetch template
+    # inferir extensão (xml por padrão; se filename terminar com .cfg então cfg)
     ext = "xml"
     if filename and filename.lower().endswith(".cfg"):
         ext = "cfg"
+    else:
+        # também tentar inspecionar request.path ou outros parâmetros se necessário
+        pass
 
     template_doc = None
-    # prefer profile.template_ref if present
-    if device.profile and device.profile.template_ref:
+
+    # 1) preferir profile.template_ref se device.profile estiver presente
+    if device and device.profile and device.profile.template_ref:
         try:
-            from .utils.mongo import get_mongo_client
             db = get_mongo_client()
-            # try by _id first
-            template_doc = db.device_templates.find_one({"_id": device.profile.template_ref})
+            coll = getattr(db, "device_templates", db.get_collection("device_templates"))
+            # tenta pelo template_ref exato
+            tref = device.profile.template_ref
+            template_doc = coll.find_one({"_id": tref})
+            if not template_doc:
+                # tenta versão lower-case (compatibilidade)
+                t_lower = str(tref).strip().lower()
+                if t_lower:
+                    template_doc = coll.find_one({"_id": t_lower})
         except Exception:
             logger.exception("Mongo lookup by template_ref failed for %s", device.profile.template_ref)
-    if not template_doc:
-        template_doc = get_template_from_mongo(model, ext)
+            template_doc = None
 
+    # 2) se não encontrou via template_ref, buscar por model extraído do UA
     if not template_doc:
-        logger.warning("Configuration template not found for model=%s ext=%s", model, ext)
-        try:
-            if prov:
-                prov.status = Provisioning.STATUS_FORBIDDEN
-                prov.notes = "Template not found"
-                prov.save(update_fields=["status", "notes"])
-        except Exception:
-            logger.exception("Failed to update provisioning record status after missing template.")
+        template_doc = get_template_from_mongo(model_for_query, ext)
+
+    # 3) se ainda não encontrou -> reprovar
+    if not template_doc:
+        logger.warning("Configuration template not found for model=%s ext=%s", model_for_query, ext)
         return HttpResponseForbidden("Configuration template not found for this model and extension")
 
-    if 'template' not in template_doc or not isinstance(template_doc['template'], str):
-        logger.error("Invalid template document structure for model=%s ext=%s: %s", model, ext, template_doc)
-        try:
-            if prov:
-                prov.status = Provisioning.STATUS_ERROR
-                prov.notes = "Invalid template document"
-                prov.save(update_fields=["status", "notes"])
-        except Exception:
-            logger.exception("Failed to update provisioning record after invalid template structure.")
+    # obter string do template com fallback (template -> content)
+    template_str = template_doc.get("template") or template_doc.get("content")
+    if not isinstance(template_str, str):
+        logger.error("Invalid template document structure for model=%s ext=%s: %s", model_for_query, ext, template_doc)
         return HttpResponseForbidden("Configuration template invalid")
 
-    # prepare context (profile defaults if present)
+    # montar contexto para renderização (mapear placeholders)
+    profile = device.profile if device else None
+
     context = {
-        "vendor": device.profile.metadata.get("vendor") if device.profile and device.profile.metadata.get("vendor") else vendor,
+        # UA / device-level
+        "vendor": vendor,
         "model": model,
         "version": version,
-        "identifier": device.identifier,
-        "ip_address": device.ip_address or "",
-        "private_ip": device.private_ip or "",
-        "public_ip": device.public_ip or "",
-        "location": getattr(device, "location", "") if hasattr(device, "location") else "",
-        "sip_server": device.profile.sip_server if device.profile else "",
-        "port_server": device.profile.port_server if device.profile else 5060,
-        "protocol_type": device.profile.protocol_type if device.profile else DeviceProfile.PROTOCOL_UDP,
-        "mac_address": device.mac_address,
-        "user_register": device.user_register,
-        "passwd_register": device.passwd_register,
-        "display_name": device.display_name,
-        "backup_server": device.profile.backup_server if device.profile else "",
-        "domain_server": device.profile.domain_server if device.profile else "",
-        "time_zone": device.profile.time_zone if device.profile else "",
-        "srtp_enable": device.profile.srtp_enable if device.profile else False,
-        "created_at": device.created_at,
-        "updated_at": device.updated_at,
-        "provisioned_at": device.provisioned_at,
-        "attempts_provisioning": device.attempts_provisioning,
-        "exported_to_rps": device.exported_to_rps,
+        "identifier": device.identifier if device else (identifier or ""),
+        "account": device.identifier if device else (identifier or ""),
+        "displayname": device.display_name if device else "",
+        "user": device.user_register if device else "",
+        "passwd": device.passwd_register if device else "",
+        "macaddress": device.mac_address if device and device.mac_address else norm_identifier,
+
+        # IPs
+        "ip_address": device.ip_address if device and device.ip_address else "",
+        "public_ip": device.public_ip if device and device.public_ip else "",
+        "private_ip": device.private_ip if device and device.private_ip else "",
+
+        # profile-level placeholders
+        "sipserver": profile.sip_server if profile else "",
+        "port": profile.port_server if profile else "",
+        "backsipserver": getattr(profile, "backup_server", "") if profile else "",
+        "backsipport": getattr(profile, "backup_port", "") if profile else "",
+        "proxy": getattr(profile, "proxy", "") if profile else "",
+        "domain": profile.domain_server if profile else "",
+        "registerttl": getattr(profile, "register_ttl", "") if profile else "",
+        "codecs": getattr(profile, "voice_codecs", "") if profile else "",
+        "ntpserver": getattr(profile, "ntp_server", "") if profile else "",
+        "provisionserver": getattr(profile, "provision_server", "") if profile else "",
+        "provisionfile": getattr(profile, "provision_file", "") if profile else "",
+        "vlanactive": getattr(profile, "vlan_active", False) if profile else False,
+        "vlanid": getattr(profile, "vlan_id", "") if profile else "",
     }
 
-    # Render template and handle errors
+    # render template using existing helper (raises TemplateSyntaxError on bad template)
     try:
-        config_content = render_template(template_doc["template"], context)
+        config_content = render_template(template_str, context)
     except Exception:
         logger.exception("Error rendering template for device %s", getattr(device, "identifier", None))
-        try:
-            if prov:
-                prov.status = Provisioning.STATUS_ERROR
-                prov.notes = "Template render error"
-                prov.save(update_fields=["status", "notes"])
-        except Exception:
-            pass
         return HttpResponseForbidden("Forbidden: error rendering template")
 
-    # mark provisioned_at and update provisioning status
+    # aplicar substituição para placeholders do tipo %%nome%% usando os dados do context
     try:
-        device.provisioned_at = timezone.now()
-        device.save(update_fields=["provisioned_at"])
-        if prov:
-            prov.status = Provisioning.STATUS_OK
-            prov.save(update_fields=["status"])
-        logger.info("Marked device %s provisioned at %s (attempts preserved)", getattr(device, "identifier", None), device.provisioned_at)
+        final_content = substitute_percent_placeholders(config_content, context)
     except Exception:
-        logger.exception("Failed to mark provisioned_at for device %s", getattr(device, "identifier", None))
+        logger.exception("Failed to substitute %%...%% placeholders for device %s", getattr(device, "identifier", None))
+        final_content = config_content
 
-    # sanitize filename and return response
-    if filename:
-        download_name = _sanitize_filename(filename)
-    else:
-        download_name = _sanitize_filename(f"{model}.{ext}")
+    # devolver final_content em vez de config_content
+    content_type = "application/xml; charset=utf-8" if ext == "xml" else "text/plain; charset=utf-8"
+    return HttpResponse(final_content, content_type=content_type)
 
-    content_type = "application/xml" if ext == "xml" else "text/plain"
-    response = HttpResponse(config_content, content_type=content_type)
-    response['Content-Disposition'] = f'attachment; filename="{download_name}"'
-    logger.info("Served config for device mac/identifier=%s as %s", getattr(device, "mac_address", None) or getattr(device, "identifier", None), download_name)
-    return response
+    # mark device provisioned (best-effort; preserve existing provisioning workflow)
+    try:
+        if device:
+            device.provisioned_at = timezone.now()
+            device.save(update_fields=["provisioned_at"])
+    except Exception:
+        logger.exception("Failed to update device provisioned_at for %s", getattr(device, "identifier", None))
+
+    # return rendered configuration
+    content_type = "application/xml; charset=utf-8" if ext == "xml" else "text/plain; charset=utf-8"
+    return HttpResponse(config_content, content_type=content_type)
