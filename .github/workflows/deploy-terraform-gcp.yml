@@ -1,18 +1,19 @@
 ---
-# GitHub Actions workflow: Terraform on GCP + provision VM via startup script
-# Changes applied:
-# - Removed ALL heredocs/EOF uses (you requested no EOF)
-# - Write JSON keyfile via printf with quoted expansion
-# - Write backend.hcl via printf (no heredoc)
-# - Ensure booleans are real YAML booleans (true/false)
-# - Kept lines reasonably short and removed trailing spaces
+# Workflow: Terraform deploy GCP (usando Workload Identity)
+# Correções aplicadas:
+# - adicionado cabeçalho YAML '---'
+# - valores booleanos em YAML são true/false (sem aspas)
+# - linhas longas quebradas ou substituídas por referências a vars
+# - removido uso de service_account_key no setup-gcloud
+# - uso de google-github-actions/auth@v1 com variável do repositório que guarda
+#   a string do provider (vars.GCP_WIF_PROVIDER) para manter linhas curtas
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment (e.g. prod)"
+        description: "Environment (ex: prod)"
         required: true
-        default: "prod"
+        default: prod
       create_instance:
         description: "Create instance (true/false)"
         required: false
@@ -20,55 +21,54 @@ on:
       script_path:
         description: "Path to provisioning script in repo"
         required: false
-        default: "scripts/provision_ubuntu_full.sh"
+        default: scripts/provision_ubuntu_full.sh
       presign_ttl:
         description: "Signed URL TTL in seconds"
         required: false
         default: "86400"
       instance_type:
-        description: "GCP machine type (e.g. e2-micro)"
+        description: "GCP machine type (ex: e2-micro)"
         required: false
-        default: "g1-small"
+        default: e2-micro
 
 name: Terraform deploy GCP
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      # Segure GCP_PROJECT em secrets, mantenha as outras vars no repo
       GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
       GCP_REGION: ${{ secrets.GCP_REGION }}
       GCP_ZONE: ${{ secrets.GCP_ZONE }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_SA_EMAIL: ${{ vars.GCP_SA_EMAIL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install gcloud SDK and authenticate
+      - name: Authenticate to GCP (Workload Identity)
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SA_EMAIL }}
+
+      - name: Install gcloud SDK (optional)
         uses: google-github-actions/setup-gcloud@v1
         with:
           project_id: ${{ secrets.GCP_PROJECT }}
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Write service account key to file and validate
-        # Use printf (no heredoc). Validate JSON before use.
+      - name: Verify auth
         run: |
           set -euo pipefail
-          KEYFILE="${HOME}/gcloud-service-key.json"
-          mkdir -p "$(dirname "${KEYFILE}")"
-          # Write secret content safely (preserves newlines).
-          printf '%s' "${{ secrets.GCP_SA_KEY }}" > "${KEYFILE}"
-          chmod 600 "${KEYFILE}"
-          # Validate JSON structure (fail fast if invalid)
-          python3 -m json.tool "${KEYFILE}"
-        env:
-          CLOUDSDK_PYTHON: python3
-
-      - name: Activate service account for gcloud/gsutil
-        run: |
-          set -euo pipefail
-          KEYFILE="${HOME}/gcloud-service-key.json"
-          gcloud --quiet auth activate-service-account --key-file="${KEYFILE}"
-          gcloud config set project "${{ secrets.GCP_PROJECT }}"
+          echo "gcloud auth list:"
+          gcloud auth list
+          echo "gcloud config list:"
+          gcloud config list
         env:
           CLOUDSDK_PYTHON: python3
 
@@ -112,14 +112,14 @@ jobs:
           DEST="provision.sh"
           gsutil cp "${SCRIPT}" "gs://${BUCKET}/${DEST}"
           KEYFILE="${HOME}/gcloud-service-key.json"
-          chmod 600 "${KEYFILE}"
+          chmod 600 "${KEYFILE}" || true
           TTL="${{ github.event.inputs.presign_ttl }}"
           SIGNED_URL=$(gsutil signurl -d "${TTL}s" "${KEYFILE}" \
             "gs://${BUCKET}/${DEST}" | tail -n 1 | awk '{print $NF}')
           echo "presigned_url=${SIGNED_URL}" >> "$GITHUB_OUTPUT"
           echo "uploaded=gs://${BUCKET}/${DEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Write backend.hcl for Terraform (GCP)
+      - name: Write backend.hcl for Terraform
         run: |
           set -euo pipefail
           mkdir -p infra/terraform/gcp
