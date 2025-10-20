@@ -16,7 +16,7 @@ variable "gcp_zone" {
 variable "name_prefix" {
   type        = string
   description = "Resource name prefix"
-  default     = "meuprojeto"
+  default     = "provisioning-crcttec"
 }
 
 variable "presigned_url" {
@@ -35,4 +35,10 @@ variable "existing_instance_sa" {
   type        = string
   description = "Optional existing service account email to attach to the VM"
   default     = ""
+}
+
+variable "machine_type" {
+  type        = string
+  description = "GCP machine type for the instance (e.g. e2-micro)"
+  default     = "g1-small"
 }
