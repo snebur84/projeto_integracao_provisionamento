@@ -1,6 +1,11 @@
 ---
 # GitHub Actions workflow: Terraform on GCP + provision VM via startup script
-# Updated: replaced heredoc backend.hcl writer with robust printf version
+# Changes applied:
+# - Removed ALL heredocs/EOF uses (you requested no EOF)
+# - Write JSON keyfile via printf with quoted expansion
+# - Write backend.hcl via printf (no heredoc)
+# - Ensure booleans are real YAML booleans (true/false)
+# - Kept lines reasonably short and removed trailing spaces
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +25,10 @@ on:
         description: "Signed URL TTL in seconds"
         required: false
         default: "86400"
+      instance_type:
+        description: "GCP machine type (e.g. e2-micro)"
+        required: false
+        default: "g1-small"
 
 name: Terraform deploy GCP
 
@@ -34,11 +43,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install gcloud SDK and gsutil
+      - name: Install gcloud SDK and authenticate
         uses: google-github-actions/setup-gcloud@v1
         with:
           project_id: ${{ secrets.GCP_PROJECT }}
           service_account_key: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Write service account key to file and validate
+        # Use printf (no heredoc). Validate JSON before use.
+        run: |
+          set -euo pipefail
+          KEYFILE="${HOME}/gcloud-service-key.json"
+          mkdir -p "$(dirname "${KEYFILE}")"
+          # Write secret content safely (preserves newlines).
+          printf '%s' "${{ secrets.GCP_SA_KEY }}" > "${KEYFILE}"
+          chmod 600 "${KEYFILE}"
+          # Validate JSON structure (fail fast if invalid)
+          python3 -m json.tool "${KEYFILE}"
+        env:
+          CLOUDSDK_PYTHON: python3
+
+      - name: Activate service account for gcloud/gsutil
+        run: |
+          set -euo pipefail
+          KEYFILE="${HOME}/gcloud-service-key.json"
+          gcloud --quiet auth activate-service-account --key-file="${KEYFILE}"
+          gcloud config set project "${{ secrets.GCP_PROJECT }}"
+        env:
+          CLOUDSDK_PYTHON: python3
 
       - name: Ensure terraform installed
         run: |
@@ -52,29 +84,6 @@ jobs:
           sudo chmod +x /usr/local/bin/terraform
           rm -f "${ZIP}"
           terraform version
-      
-      - name: Write service account key to file and authenticate
-        run: |
-          set -euo pipefail
-          KEYFILE="${HOME}/gcloud-service-key.json"
-
-          # Write secret to disk (preserves newlines). Do NOT add extra quotes.
-          printf '%s' "${{ secrets.GCP_SA_KEY }}" > "${KEYFILE}"
-          chmod 600 "${KEYFILE}"
-
-          # Validate JSON (fail fast with descriptive message if invalid).
-          # Use python's json tool so we don't need jq installed.
-          if ! python3 -m json.tool "${KEYFILE}" >/dev/null 2>&1; then
-            echo "ERROR: GCP_SA_KEY is not valid JSON. Re-create the repository secret"
-            echo "Make sure you pasted the raw JSON file contents (no surrounding quotes or ``` fences)."
-            exit 1
-          fi
-
-          # Activate the service account for gcloud/gsutil and set project
-          gcloud --quiet auth activate-service-account --key-file="${KEYFILE}"
-          gcloud config set project "${{ secrets.GCP_PROJECT }}"
-        env:
-          CLOUDSDK_PYTHON: python3
 
       - name: Bootstrap GCS backend (create bucket if missing)
         id: bootstrap
@@ -87,7 +96,8 @@ jobs:
             echo "Bucket exists: ${BUCKET}"
           else
             echo "Creating bucket ${BUCKET} in ${REGION}"
-            gsutil mb -p "${GCP_PROJECT}" -l "${REGION}" "gs://${BUCKET}"
+            gsutil mb -p "${GCP_PROJECT}" -l "${REGION}" \
+              "gs://${BUCKET}"
             gsutil versioning set on "gs://${BUCKET}"
           fi
           echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
@@ -101,12 +111,9 @@ jobs:
           SCRIPT="${{ github.event.inputs.script_path }}"
           DEST="provision.sh"
           gsutil cp "${SCRIPT}" "gs://${BUCKET}/${DEST}"
-          # write keyfile for gsutil signurl usage
           KEYFILE="${HOME}/gcloud-service-key.json"
-          printf '%s' "${{ secrets.GCP_SA_KEY }}" > "${KEYFILE}"
           chmod 600 "${KEYFILE}"
           TTL="${{ github.event.inputs.presign_ttl }}"
-          # signurl prints header then URL; extract the last token
           SIGNED_URL=$(gsutil signurl -d "${TTL}s" "${KEYFILE}" \
             "gs://${BUCKET}/${DEST}" | tail -n 1 | awk '{print $NF}')
           echo "presigned_url=${SIGNED_URL}" >> "$GITHUB_OUTPUT"
@@ -116,7 +123,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p infra/terraform/gcp
-          # Use printf to avoid heredoc terminator/indentation issues.
           printf 'bucket = "%s"\n' "${{ steps.bootstrap.outputs.bucket }}" \
             > infra/terraform/gcp/backend.hcl
           printf 'prefix = "%s/terraform.tfstate"\n' \
@@ -135,6 +141,7 @@ jobs:
           TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
           TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
           TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_machine_type: ${{ github.event.inputs.instance_type }}
         run: |
           set -euo pipefail
           terraform init -backend-config=backend.hcl -reconfigure
@@ -150,6 +157,7 @@ jobs:
           TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
           TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
           TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_machine_type: ${{ github.event.inputs.instance_type }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve tfplan
