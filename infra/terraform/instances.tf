@@ -1,5 +1,5 @@
 # EC2 / IAM / provisioning via user_data (presigned URL)
-# By default the Terraform run will NOT attempt to create IAM roles.
+# By default Terraform will NOT attempt to create IAM roles.
 # The instance will run a provision script downloaded from a presigned URL.
 
 variable "create_instance" {
@@ -56,14 +56,15 @@ variable "environment" {
   default     = "prod"
 }
 
-# local flag to detect use of existing instance profile
+# local flags and computed name
 locals {
   use_existing_profile = length(trimspace(var.existing_instance_profile)) > 0
 
-  # Compute instance_profile_name in one expression and expose via local.
-  # This avoids placing a multi-line ternary directly in the resource
-  # which previously caused parsing issues. If using an existing profile,
-  # use the data source; otherwise, if allowed, use the created profile.
+  # single-line ternary expression to avoid HCL parsing errors caused by
+  # multi-line ternary breaks. This computes the instance profile name:
+  # - existing profile (data source) when provided
+  # - otherwise the profile created by this module (if create_iam_role)
+  # - otherwise null
   instance_profile_name = local.use_existing_profile ?
     data.aws_iam_instance_profile.existing[0].name :
     (var.create_instance && var.create_iam_role ?
@@ -130,8 +131,7 @@ resource "aws_instance" "provision" {
   key_name      = length(trimspace(var.key_name)) > 0 ? var.key_name : null
   subnet_id     = length(trimspace(var.subnet_id)) > 0 ? var.subnet_id : null
 
-  # Use the computed local.instance_profile_name to avoid parser issues with
-  # multi-line ternaries inside a resource argument.
+  # Use the computed local.instance_profile_name (single token).
   iam_instance_profile = local.instance_profile_name
 
   vpc_security_group_ids = length(var.sg_ids) > 0 ? var.sg_ids : null
