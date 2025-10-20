@@ -1,9 +1,3 @@
-variable "name_prefix" {
-  description = "Prefix for resource names"
-  type        = string
-  default     = "provision"
-}
-
 variable "public_key" {
   description = "Public SSH key to add as aws_key_pair (ssh-rsa or ssh-ed25519). Optional if using SSM only."
   type        = string
