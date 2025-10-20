@@ -1,8 +1,9 @@
 ---
 # Bootstrap TF backend (S3 + DynamoDB) if missing, then run terraform
-# and deploy the application via SSM. This version fixes the remaining
-# yamllint issues: removed a non-boolean "truthy" expression and added
-# a final newline at EOF.
+# and deploy the application via SSM.
+# Changes requested:
+# - Use a simple, valid default bucket name (provisionbucket-<env>)
+# - Always pass aws-session-token in Configure AWS credentials
 on:
   workflow_dispatch:
     inputs:
@@ -17,10 +18,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      # removed fallback "|| ''" to avoid truthy warning from yamllint
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
       TFSTATE_BUCKET: ${{ secrets.TFSTATE_BUCKET || '' }}
       TFSTATE_LOCK_TABLE: ${{ secrets.TFSTATE_LOCK_TABLE || '' }}
@@ -40,12 +37,12 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.5.7
+          terraform_version: 1.5.12
 
-      - name: Ensure tools present
+      - name: Smoke check tools
         run: |
           aws --version
-          terraform -version
+          terraform version
 
       - name: Bootstrap backend if missing
         id: bootstrap
@@ -56,13 +53,14 @@ jobs:
           REGION="${AWS_REGION:-us-east-1}"
           ENV="${ENVIRONMENT:-prod}"
 
+          # Decide bucket name. Use provided secret if present,
+          # otherwise use a simple preset name per environment.
           if [ -n "${TFSTATE_BUCKET}" ]; then
             BUCKET="${TFSTATE_BUCKET}"
+            echo "Using TFSTATE_BUCKET from secret: ${BUCKET}"
           else
-            REPO_SAFE=$(echo "${GITHUB_REPOSITORY}" \
-              | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-            RAND=$(openssl rand -hex 4)
-            BUCKET="${REPO_SAFE}-${ENV}-tfstate-${RAND}"
+            BUCKET="provisionbucket-${ENV}"
+            echo "No TFSTATE_BUCKET secret; using default: ${BUCKET}"
           fi
 
           if [ -n "${TFSTATE_LOCK_TABLE}" ]; then
@@ -75,10 +73,11 @@ jobs:
           echo "dynamodb_table=${TABLE}" >> "$GITHUB_OUTPUT"
           echo "region=${REGION}" >> "$GITHUB_OUTPUT"
 
-          # create bucket if missing
+          # Create bucket if missing
           if aws s3api head-bucket --bucket "${BUCKET}" 2>/dev/null; then
-            echo "Bucket ${BUCKET} exists"
+            echo "Bucket ${BUCKET} exists or accessible"
           else
+            echo "Creating bucket ${BUCKET} in ${REGION}..."
             if [ "${REGION}" = "us-east-1" ]; then
               aws s3api create-bucket --bucket "${BUCKET}"
             else
@@ -92,12 +91,11 @@ jobs:
               --bucket "${BUCKET}" \
               --versioning-configuration Status=Enabled
 
-            # create enc.json using printf to avoid heredoc issues
             printf '%s\n' '{' \
               '  "Rules": [' \
               '    {' \
               '      "ApplyServerSideEncryptionByDefault": {' \
-              '      "SSEAlgorithm": "AES256"' \
+              '        "SSEAlgorithm": "AES256"' \
               '      }' \
               '    }' \
               '  ]' \
@@ -110,12 +108,13 @@ jobs:
             echo "Created bucket ${BUCKET}"
           fi
 
-          # create dynamodb table if missing
+          # Create DynamoDB table for locking if missing
           if aws dynamodb describe-table \
             --table-name "${TABLE}" --region "${REGION}" \
             >/dev/null 2>&1; then
             echo "DynamoDB table ${TABLE} exists"
           else
+            echo "Creating DynamoDB table ${TABLE}..."
             aws dynamodb create-table \
               --table-name "${TABLE}" \
               --attribute-definitions \
@@ -128,7 +127,7 @@ jobs:
             echo "Created table ${TABLE}"
           fi
 
-          # generate backend.hcl using printf to avoid heredoc problems
+          # Write backend.hcl
           printf 'bucket = "%s"\n' "${BUCKET}" > backend.hcl
           printf 'key    = "%s/terraform.tfstate"\n' "${ENV}" >> backend.hcl
           printf 'region = "%s"\n' "${REGION}" >> backend.hcl
@@ -141,9 +140,6 @@ jobs:
       - name: Terraform validate & plan
         working-directory: infra/terraform
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           set -euo pipefail
@@ -153,25 +149,25 @@ jobs:
       - name: Terraform apply
         working-directory: infra/terraform
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           set -euo pipefail
           terraform apply -input=false -auto-approve tfplan
 
-      - name: Upload provision script
-        if: ${{ success() == true }}
+      - name: Upload provision script (guarded)
+        working-directory: infra/terraform
         run: |
           set -euo pipefail
+          if [ ! -f tfplan ]; then
+            echo "tfplan not present; skipping upload"
+            exit 0
+          fi
           STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
           aws s3 cp scripts/provision_ubuntu_ec2.sh \
             "s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh" \
             --acl private
 
-      - name: Deploy via SSM
-        if: ${{ success() == true }}
+      - name: Deploy via SSM (guarded)
         working-directory: infra/terraform
         run: |
           set -euo pipefail
@@ -182,7 +178,6 @@ jobs:
             exit 0
           fi
 
-          # build command in parts to keep lines short
           CMD1="aws s3 cp s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh"
           CMD2="/tmp/provision_ubuntu_ec2.sh && chmod +x"
           CMD3="/tmp/provision_ubuntu_ec2.sh && /bin/bash"
@@ -198,7 +193,6 @@ jobs:
             --query "Command.CommandId" --output text
 
       - name: Print backend info
-        if: always()
         run: |
           echo "bucket=${{ steps.bootstrap.outputs.bucket }}"
           echo "dynamodb_table=${{ steps.bootstrap.outputs.dynamodb_table }}"
