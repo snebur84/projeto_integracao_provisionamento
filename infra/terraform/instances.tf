@@ -1,10 +1,23 @@
-# EC2 / IAM / SSM resources for provisioning VM
-# The instance and IAM resources are created only when create_instance = true.
+# EC2 / IAM / provisioning via user_data (cloud-init)
+# By default the Terraform run will NOT attempt to create IAM roles.
+# The instance will run a provision script downloaded from a presigned URL.
 
 variable "create_instance" {
   description = "Create an EC2 instance for provisioning?"
   type        = bool
   default     = true
+}
+
+variable "create_iam_role" {
+  description = "Allow Terraform to create IAM role/profile (dangerous)."
+  type        = bool
+  default     = false
+}
+
+variable "existing_instance_profile" {
+  description = "Name of an existing IAM instance profile to use (optional)"
+  type        = string
+  default     = ""
 }
 
 variable "instance_type" {
@@ -31,10 +44,16 @@ variable "subnet_id" {
   default     = ""
 }
 
-variable "existing_instance_profile" {
-  description = "Name of an existing IAM instance profile to use (optional)"
+variable "presigned_url" {
+  description = "Pre-signed URL to download the provisioning script"
   type        = string
   default     = ""
+}
+
+variable "environment" {
+  description = "Environment name passed to the provision script"
+  type        = string
+  default     = "prod"
 }
 
 locals {
@@ -47,11 +66,10 @@ data "aws_iam_instance_profile" "existing" {
   name  = var.existing_instance_profile
 }
 
-# Only create role/profile/attachments when creating instance AND not using
-# an existing profile. This avoids requiring iam:CreateRole permissions
-# when the runner/account can't create IAM resources.
+# Only create role/profile/attachments when explicitly allowed by
+# create_iam_role and not using an existing profile.
 resource "aws_iam_role" "ec2_role" {
-  count = (var.create_instance && !local.use_existing_profile) ? 1 : 0
+  count = (var.create_instance && var.create_iam_role && !local.use_existing_profile) ? 1 : 0
 
   name = "${var.name_prefix}-ec2-role"
 
@@ -66,21 +84,31 @@ resource "aws_iam_role" "ec2_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "ssm_attach" {
-  count      = (var.create_instance && !local.use_existing_profile) ? 1 : 0
+  count      = (var.create_instance && var.create_iam_role && !local.use_existing_profile) ? 1 : 0
   role       = aws_iam_role.ec2_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_role_policy_attachment" "s3_read_attach" {
-  count      = (var.create_instance && !local.use_existing_profile) ? 1 : 0
+  count      = (var.create_instance && var.create_iam_role && !local.use_existing_profile) ? 1 : 0
   role       = aws_iam_role.ec2_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
 }
 
 resource "aws_iam_instance_profile" "ec2_profile" {
-  count = (var.create_instance && !local.use_existing_profile) ? 1 : 0
+  count = (var.create_instance && var.create_iam_role && !local.use_existing_profile) ? 1 : 0
   name  = "${var.name_prefix}-ec2-profile"
   role  = aws_iam_role.ec2_role[0].name
+}
+
+# Data source for Ubuntu AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
 }
 
 # EC2 instance (created only when create_instance = true)
@@ -92,22 +120,40 @@ resource "aws_instance" "provision" {
   key_name      = length(trimspace(var.key_name)) > 0 ? var.key_name : null
   subnet_id     = length(trimspace(var.subnet_id)) > 0 ? var.subnet_id : null
 
-  # Single-line nested conditional expression (valid Terraform syntax)
-  iam_instance_profile = local.use_existing_profile ? data.aws_iam_instance_profile.existing[0].name : (var.create_instance ? aws_iam_instance_profile.ec2_profile[0].name : null)
+  iam_instance_profile = local.use_existing_profile ?
+    data.aws_iam_instance_profile.existing[0].name :
+    (var.create_instance && var.create_iam_role ? aws_iam_instance_profile.ec2_profile[0].name : null)
 
   vpc_security_group_ids = length(var.sg_ids) > 0 ? var.sg_ids : null
+
+  # user_data downloads the presigned URL (in var.presigned_url)
+  # and executes the provisioning script on first boot.
+  user_data = <<-EOF
+    #!/bin/bash
+    set -euo pipefail
+    PRESIGNED_URL="${var.presigned_url}"
+    ENVIRONMENT="${var.environment}"
+    if [ -n "${PRESIGNED_URL}" ]; then
+      echo "Downloading provision script..."
+      curl -fsSL "${PRESIGNED_URL}" -o /tmp/provision.sh || exit 1
+      chmod +x /tmp/provision.sh
+      /bin/bash /tmp/provision.sh "${ENVIRONMENT}"
+    else
+      echo "No presigned URL provided; nothing to run."
+    fi
+  EOF
 
   tags = {
     Name = "${var.name_prefix}-provision"
   }
 }
 
-# Data source for Ubuntu AMI (kept at the end for readability)
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
+output "instance_id" {
+  value       = try(aws_instance.provision[0].id, "")
+  description = "ID of created instance (empty if not created)"
+}
+
+output "public_ip" {
+  value       = try(aws_instance.provision[0].public_ip, "")
+  description = "Public IP (if assigned)"
 }

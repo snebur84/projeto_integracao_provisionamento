@@ -1,6 +1,8 @@
 ---
-# Bootstrap backend, run Terraform (create VM by default),
-# upload provision script and execute it on the instance via SSM.
+# Workflow: Terraform -> create EC2 -> provision via user_data (presigned URL)
+# Fixes applied:
+# - ensure boolean inputs use real booleans (no quoted "true"/"false")
+# - wrap long lines to <= 80 chars to satisfy yamllint line-length rule
 on:
   workflow_dispatch:
     inputs:
@@ -32,8 +34,12 @@ on:
         description: "Path to provisioning script in repo"
         required: false
         default: "scripts/provision_ubuntu_full.sh"
+      presign_ttl:
+        description: "Presigned URL TTL in seconds"
+        required: false
+        default: "86400"
 
-name: Terraform deploy + VM provision
+name: Terraform deploy + VM provision (user_data)
 
 jobs:
   deploy:
@@ -72,14 +78,12 @@ jobs:
           set -euo pipefail
           REGION="${AWS_REGION:-us-east-1}"
           ENV="${{ github.event.inputs.environment }}"
-
           if [ -n "${{ secrets.TFSTATE_BUCKET }}" ]; then
             BUCKET="${{ secrets.TFSTATE_BUCKET }}"
           else
             BUCKET="provisionbucket-${ENV}"
           fi
           TABLE="${BUCKET}-locks"
-
           echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
           echo "dynamodb_table=${TABLE}" >> "$GITHUB_OUTPUT"
           echo "region=${REGION}" >> "$GITHUB_OUTPUT"
@@ -134,6 +138,21 @@ jobs:
           printf 'dynamodb_table = "%s"\n' "${TABLE}" >> backend.hcl
           printf 'encrypt = true\n' >> backend.hcl
 
+      - name: Upload provision script and create presigned URL
+        id: presign
+        run: |
+          set -euo pipefail
+          STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          SCRIPT="${{ github.event.inputs.script_path }}"
+          DEST="provision.sh"
+          aws s3 cp "${SCRIPT}" \
+            "s3://${STAGING_BUCKET}/${DEST}" --acl private
+          TTL="${{ github.event.inputs.presign_ttl }}"
+          PRESIGNED=$(aws s3 presign \
+            "s3://${STAGING_BUCKET}/${DEST}" --expires-in "${TTL}")
+          echo "presigned_url=${PRESIGNED}" >> "$GITHUB_OUTPUT"
+          echo "Uploaded and presigned script"
+
       - name: Terraform validate & plan
         working-directory: infra/terraform
         env:
@@ -142,10 +161,11 @@ jobs:
           TF_VAR_instance_type: ${{ github.event.inputs.instance_type }}
           TF_VAR_key_name: ${{ github.event.inputs.key_name }}
           TF_VAR_subnet_id: ${{ github.event.inputs.subnet_id }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_environment: ${{ github.event.inputs.environment }}
           SG_INPUT: ${{ github.event.inputs.security_group_ids }}
         run: |
           set -euo pipefail
-          # convert SG_INPUT (comma list) to JSON list for TF_VAR_sg_ids
           if [ -n "${SG_INPUT}" ]; then
             IFS=',' read -ra _SGARR <<<"${SG_INPUT}"
             SG_JSON="["
@@ -167,7 +187,6 @@ jobs:
             SG_JSON='[]'
           fi
           export TF_VAR_sg_ids="${SG_JSON}"
-
           terraform init -backend-config=backend.hcl -reconfigure
           terraform validate
           terraform plan -out=tfplan -input=false
@@ -180,10 +199,11 @@ jobs:
           TF_VAR_instance_type: ${{ github.event.inputs.instance_type }}
           TF_VAR_key_name: ${{ github.event.inputs.key_name }}
           TF_VAR_subnet_id: ${{ github.event.inputs.subnet_id }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_environment: ${{ github.event.inputs.environment }}
           SG_INPUT: ${{ github.event.inputs.security_group_ids }}
         run: |
           set -euo pipefail
-          # reuse same SG conversion as above
           if [ -n "${SG_INPUT}" ]; then
             IFS=',' read -ra _SGARR <<<"${SG_INPUT}"
             SG_JSON="["
@@ -205,38 +225,7 @@ jobs:
             SG_JSON='[]'
           fi
           export TF_VAR_sg_ids="${SG_JSON}"
-
           terraform apply -input=false -auto-approve tfplan
-
-      - name: Upload provision script
-        run: |
-          set -euo pipefail
-          STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
-          SCRIPT="${{ github.event.inputs.script_path }}"
-          aws s3 cp "${SCRIPT}" "s3://${STAGING_BUCKET}/provision.sh" \
-            --acl private
-
-      - name: Execute provision script via SSM
-        working-directory: infra/terraform
-        run: |
-          set -euo pipefail
-          STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
-          INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || true)
-          if [ -z "${INSTANCE_ID}" ]; then
-            echo "No instance id found; skipping SSM execution"
-            exit 0
-          fi
-          # copy script and run with environment arg
-          CMD="aws s3 cp s3://${STAGING_BUCKET}/provision.sh /tmp/provision.sh"
-          CMD="${CMD} && chmod +x /tmp/provision.sh"
-          CMD="${CMD} && /bin/bash /tmp/provision.sh ${ENV:-prod}"
-          CMD_JSON=$(printf '["%s"]' "$CMD")
-          aws ssm send-command --instance-ids "${INSTANCE_ID}" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Run provision script" \
-            --parameters commands="$CMD_JSON" \
-            --timeout-seconds 900 \
-            --query "Command.CommandId" --output text
 
       - name: Print backend info
         run: |
