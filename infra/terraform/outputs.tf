@@ -1,18 +1,19 @@
-output "ecr_repository_url" {
-  description = "ECR repository URL"
-  value       = aws_ecr_repository.app.repository_url
-  # conditionally sensitive if desired
+output "instance_id" {
+  value = aws_instance.provision.id
 }
 
-output "ecs_cluster_name" {
-  value = aws_ecs_cluster.this.name
+output "public_ip" {
+  value = aws_instance.provision.public_ip
 }
 
-output "ecs_service_name" {
-  value = aws_ecs_service.app.name
+output "public_dns" {
+  value = aws_instance.provision.public_dns
 }
 
-output "alb_dns_name" {
-  value = aws_lb.app.dns_name
-  description = "ALB DNS name"
+output "instance_profile" {
+  value = aws_iam_instance_profile.ec2_profile.name
+}
+
+output "staging_bucket" {
+  value = local.staging_bucket
 }

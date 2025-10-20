@@ -1,50 +1,72 @@
-variable "aws_region" {
-  type    = string
-  default = "us-east-1"
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
 }
 
-variable "environment" {
-  type    = string
-  default = "prod"
+variable "name_prefix" {
+  description = "Prefix for resource names"
+  type        = string
+  default     = "provision"
 }
 
-variable "tf_state_s3_bucket" {
-  type = string
+variable "public_key" {
+  description = "Public SSH key to add as aws_key_pair (ssh-rsa or ssh-ed25519). Optional if using SSM only."
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
-variable "tf_lock_table" {
-  type = string
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.small"
 }
 
-variable "ecr_repo_name" {
-  type    = string
-  default = "app-repo"
+variable "root_volume_size" {
+  description = "Root volume size in GB"
+  type        = number
+  default     = 30
 }
 
-# DB secrets: DO NOT hardcode; set via CI/GitHub Secrets or Secrets Manager
-variable "db_username" {
-  type    = string
-  default = "admin"
-}
-variable "db_password" {
-  type      = string
-  sensitive = true
+variable "associate_public_ip" {
+  description = "Whether to associate a public IP"
+  type        = bool
+  default     = true
 }
 
-# App / ECS related
-variable "ecs_cluster_name" {
-  type    = string
-  default = "app-cluster"
+variable "allowed_cidrs" {
+  description = "List of CIDR blocks allowed for SSH/HTTP access"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
-variable "service_name" {
-  type    = string
-  default = "app-service"
+
+variable "vpc_id" {
+  description = "Optional VPC id. Leave empty to use default."
+  type        = string
+  default     = ""
 }
-variable "container_name" {
-  type    = string
-  default = "app"
+
+variable "subnet_id" {
+  description = "Optional subnet id. Leave empty to use default."
+  type        = string
+  default     = ""
 }
-variable "container_port" {
-  type    = number
-  default = 8000
+
+variable "s3_bucket" {
+  description = "S3 bucket name used by CI to stage artifacts (will create if empty)"
+  type        = string
+  default     = ""
+}
+
+variable "tfstate_bucket" {
+  description = "S3 bucket used for Terraform state backend"
+  type        = string
+  default     = ""
+}
+
+variable "tfstate_lock_table" {
+  description = "DynamoDB table name used for Terraform state locking"
+  type        = string
+  default     = ""
 }

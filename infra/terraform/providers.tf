@@ -1,8 +1,12 @@
-provider "aws" {
-  region = var.aws_region
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
 
-  # Optional: assume role via TF var if you use OIDC / cross-account
-  # assume_role {
-  #   role_arn = var.assume_role_arn
-  # }
+provider "aws" {
+  region = var.region
 }
