@@ -20,12 +20,7 @@ Pré-requisitos
 - (Opcional) Docker e docker-compose para execução em container
 
 Observação importante sobre o script de provisionamento local
-- A forma recomendada de levantar e preparar a aplicação localmente é executar o script `scripts/provision_ubuntu_full.sh`.
-- Esse script:
-  - atualiza o sistema (apt-get upgrade/instala pacotes necessários),
-  - cria variáveis e arquivos de ambiente necessários (escreve `.env`),
-  - prepara banco(s), virtualenv, dependências, migrations e static files,
-  - e ao final inicia um prompt para você inserir o usuário e senha do django-admin (cria o superuser se informado).
+- Existe um script que prepara e controla todo o deploy localmente: `scripts/provision_ubuntu_full.sh`.
 - Antes de executar, siga os passos abaixo para garantir permissões corretas.
 
 Passos (recomendado)
