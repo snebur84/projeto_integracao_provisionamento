@@ -10,7 +10,6 @@ resource "random_id" "bucket_suffix" {
 
 resource "aws_s3_bucket" "staging" {
   bucket = "${var.name_prefix}-staging-${random_id.bucket_suffix.hex}"
-  acl    = "private"
 
   tags = {
     Name        = "${var.name_prefix}-staging"
@@ -18,7 +17,13 @@ resource "aws_s3_bucket" "staging" {
   }
 }
 
+# Use the separate aws_s3_bucket_acl resource as acl attr is deprecated.
+resource "aws_s3_bucket_acl" "staging_acl" {
+  bucket = aws_s3_bucket.staging.id
+  acl    = "private"
+}
+
 output "staging_bucket" {
-  value = aws_s3_bucket.staging.bucket
+  value       = aws_s3_bucket.staging.bucket
   description = "Name of the staging S3 bucket"
 }

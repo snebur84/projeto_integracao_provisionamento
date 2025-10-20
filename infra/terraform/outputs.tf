@@ -1,15 +1,22 @@
+# Outputs guarded with try() so Terraform init/validate won't fail when no
+# instance/profile was created (create_instance = false).
+
 output "instance_id" {
-  value = aws_instance.provision.id
+  description = "ID of the provision instance (empty if not created)"
+  value       = try(aws_instance.provision[0].id, "")
 }
 
 output "public_ip" {
-  value = aws_instance.provision.public_ip
+  description = "Public IP of provision instance (empty if not created)"
+  value       = try(aws_instance.provision[0].public_ip, "")
 }
 
 output "public_dns" {
-  value = aws_instance.provision.public_dns
+  description = "Public DNS of provision instance (empty if not created)"
+  value       = try(aws_instance.provision[0].public_dns, "")
 }
 
 output "instance_profile" {
-  value = aws_iam_instance_profile.ec2_profile.name
+  description = "Instance profile name attached to the instance"
+  value       = try(aws_iam_instance_profile.ec2_profile[0].name, "")
 }
