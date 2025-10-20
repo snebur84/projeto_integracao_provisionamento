@@ -5,12 +5,6 @@ variable "public_key" {
   sensitive   = true
 }
 
-variable "instance_type" {
-  description = "EC2 instance type"
-  type        = string
-  default     = "t3.small"
-}
-
 variable "root_volume_size" {
   description = "Root volume size in GB"
   type        = number
@@ -31,12 +25,6 @@ variable "allowed_cidrs" {
 
 variable "vpc_id" {
   description = "Optional VPC id. Leave empty to use default."
-  type        = string
-  default     = ""
-}
-
-variable "subnet_id" {
-  description = "Optional subnet id. Leave empty to use default."
   type        = string
   default     = ""
 }

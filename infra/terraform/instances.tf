@@ -31,12 +31,6 @@ variable "subnet_id" {
   default     = ""
 }
 
-variable "name_prefix" {
-  description = "Prefix used for resource names"
-  type        = string
-  default     = "meuprojeto"
-}
-
 # Find a recent Ubuntu AMI (adjust filter if you prefer another distro)
 data "aws_ami" "ubuntu" {
   most_recent = true
