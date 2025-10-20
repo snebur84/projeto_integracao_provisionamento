@@ -1,0 +1,137 @@
+---
+# GitHub Actions workflow: Terraform on GCP + provision VM via startup script
+# Updated: replaced heredoc backend.hcl writer with robust printf version
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment (e.g. prod)"
+        required: true
+        default: "prod"
+      create_instance:
+        description: "Create instance (true/false)"
+        required: false
+        default: true
+      script_path:
+        description: "Path to provisioning script in repo"
+        required: false
+        default: "scripts/provision_gcp.sh"
+      presign_ttl:
+        description: "Signed URL TTL in seconds"
+        required: false
+        default: "86400"
+
+name: Terraform deploy GCP
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+      GCP_REGION: ${{ secrets.GCP_REGION }}
+      GCP_ZONE: ${{ secrets.GCP_ZONE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install gcloud SDK and gsutil
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ secrets.GCP_PROJECT }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Ensure terraform installed
+        run: |
+          set -euo pipefail
+          TERRAFORM_VERSION="${TERRAFORM_VERSION:-1.5.7}"
+          ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          curl -fsSLo "${ZIP}" \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${ZIP}"
+          unzip -q "${ZIP}"
+          sudo mv terraform /usr/local/bin/terraform
+          sudo chmod +x /usr/local/bin/terraform
+          rm -f "${ZIP}"
+          terraform version
+
+      - name: Bootstrap GCS backend (create bucket if missing)
+        id: bootstrap
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          BUCKET="provisionbucket-${ENV}-gcp"
+          REGION="${GCP_REGION:-us-central1}"
+          if gsutil ls -b "gs://${BUCKET}" >/dev/null 2>&1; then
+            echo "Bucket exists: ${BUCKET}"
+          else
+            echo "Creating bucket ${BUCKET} in ${REGION}"
+            gsutil mb -p "${GCP_PROJECT}" -l "${REGION}" "gs://${BUCKET}"
+            gsutil versioning set on "gs://${BUCKET}"
+          fi
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload script and create signed URL
+        id: presign
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          SCRIPT="${{ github.event.inputs.script_path }}"
+          DEST="provision.sh"
+          gsutil cp "${SCRIPT}" "gs://${BUCKET}/${DEST}"
+          # write keyfile for gsutil signurl usage
+          KEYFILE="${HOME}/gcloud-service-key.json"
+          printf '%s' "${{ secrets.GCP_SA_KEY }}" > "${KEYFILE}"
+          chmod 600 "${KEYFILE}"
+          TTL="${{ github.event.inputs.presign_ttl }}"
+          # signurl prints header then URL; extract the last token
+          SIGNED_URL=$(gsutil signurl -d "${TTL}s" "${KEYFILE}" \
+            "gs://${BUCKET}/${DEST}" | tail -n 1 | awk '{print $NF}')
+          echo "presigned_url=${SIGNED_URL}" >> "$GITHUB_OUTPUT"
+          echo "uploaded=gs://${BUCKET}/${DEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Write backend.hcl for Terraform (GCP)
+        run: |
+          set -euo pipefail
+          mkdir -p infra/terraform/gcp
+          # Use printf to avoid heredoc terminator/indentation issues.
+          printf 'bucket = "%s"\n' "${{ steps.bootstrap.outputs.bucket }}" \
+            > infra/terraform/gcp/backend.hcl
+          printf 'prefix = "%s/terraform.tfstate"\n' \
+            "${{ github.event.inputs.environment }}" >> \
+            infra/terraform/gcp/backend.hcl
+          printf 'project = "%s"\n' "${{ secrets.GCP_PROJECT }}" >> \
+            infra/terraform/gcp/backend.hcl
+          echo "Wrote infra/terraform/gcp/backend.hcl"
+
+      - name: Terraform init & plan
+        working-directory: infra/terraform/gcp
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: "${HOME}/gcloud-service-key.json"
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_gcp_project: ${{ secrets.GCP_PROJECT }}
+          TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
+          TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+        run: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl -reconfigure
+          terraform validate
+          terraform plan -out=tfplan -input=false
+
+      - name: Terraform apply
+        working-directory: infra/terraform/gcp
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: "${HOME}/gcloud-service-key.json"
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_gcp_project: ${{ secrets.GCP_PROJECT }}
+          TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
+          TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve tfplan
+
+      - name: Print results
+        run: |
+          echo "bucket=${{ steps.bootstrap.outputs.bucket }}"
+          echo "presigned_url=${{ steps.presign.outputs.presigned_url }}"
