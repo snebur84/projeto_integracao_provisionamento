@@ -34,10 +34,22 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.5.12
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          # Ajuste a versão se quiser outra
+          TERRAFORM_VERSION="${TERRAFORM_VERSION:-1.5.7}"
+          echo "Installing Terraform ${TERRAFORM_VERSION}"
+          PLAT=linux_amd64
+          ZIP="terraform_${TERRAFORM_VERSION}_${PLAT}.zip"
+          URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${ZIP}"
+          # Download, unzip e instalar no /usr/local/bin
+          curl -fsSLo "${ZIP}" "${URL}"
+          unzip -q "${ZIP}"
+          sudo mv terraform /usr/local/bin/terraform
+          sudo chmod +x /usr/local/bin/terraform
+          rm -f "${ZIP}"
+          terraform version
 
       - name: Smoke check tools
         run: |
