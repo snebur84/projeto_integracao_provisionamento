@@ -17,12 +17,6 @@ resource "aws_s3_bucket" "staging" {
   }
 }
 
-# Use the separate aws_s3_bucket_acl resource as acl attr is deprecated.
-resource "aws_s3_bucket_acl" "staging_acl" {
-  bucket = aws_s3_bucket.staging.id
-  acl    = "private"
-}
-
 output "staging_bucket" {
   value       = aws_s3_bucket.staging.bucket
   description = "Name of the staging S3 bucket"

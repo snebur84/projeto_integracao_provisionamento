@@ -31,19 +31,30 @@ variable "subnet_id" {
   default     = ""
 }
 
-# Find a recent Ubuntu AMI (adjust filter if you prefer another distro)
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
+variable "name_prefix" {
+  description = "Prefix used for resource names"
+  type        = string
+  default     = "meuprojeto"
 }
 
-# IAM role for EC2 to allow SSM + S3 read (created only if instance)
+variable "existing_instance_profile" {
+  description = "Name of an existing IAM instance profile to use (optional)"
+  type        = string
+  default     = ""
+}
+
+locals {
+  use_existing_profile = length(trimspace(var.existing_instance_profile)) > 0
+}
+
+# If user provided an existing profile name, read it; otherwise count=0.
+data "aws_iam_instance_profile" "existing" {
+  count = local.use_existing_profile ? 1 : 0
+  name  = var.existing_instance_profile
+}
+
 resource "aws_iam_role" "ec2_role" {
-  count = var.create_instance ? 1 : 0
+  count = (var.create_instance && !local.use_existing_profile) ? 1 : 0
 
   name = "${var.name_prefix}-ec2-role"
 
@@ -57,24 +68,20 @@ resource "aws_iam_role" "ec2_role" {
   })
 }
 
-# Attach SSM managed policy so SSM can manage the instance
 resource "aws_iam_role_policy_attachment" "ssm_attach" {
-  count      = var.create_instance ? 1 : 0
+  count      = (var.create_instance && !local.use_existing_profile) ? 1 : 0
   role       = aws_iam_role.ec2_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Attach S3 read-only so the instance can download the provisioning script
-# (This is broad read-only; you can replace with a tighter inline policy
-# scoped to your bucket ARN if you prefer.)
 resource "aws_iam_role_policy_attachment" "s3_read_attach" {
-  count      = var.create_instance ? 1 : 0
+  count      = (var.create_instance && !local.use_existing_profile) ? 1 : 0
   role       = aws_iam_role.ec2_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
 }
 
 resource "aws_iam_instance_profile" "ec2_profile" {
-  count = var.create_instance ? 1 : 0
+  count = (var.create_instance && !local.use_existing_profile) ? 1 : 0
   name  = "${var.name_prefix}-ec2-profile"
   role  = aws_iam_role.ec2_role[0].name
 }
@@ -88,13 +95,23 @@ resource "aws_instance" "provision" {
   key_name      = length(trimspace(var.key_name)) > 0 ? var.key_name : null
   subnet_id     = length(trimspace(var.subnet_id)) > 0 ? var.subnet_id : null
 
-  # Use instance profile created above (or null when not creating)
-  iam_instance_profile = var.create_instance ? aws_iam_instance_profile.ec2_profile[0].name : null
+  iam_instance_profile = local.use_existing_profile ?
+    data.aws_iam_instance_profile.existing[0].name :
+    (var.create_instance ? aws_iam_instance_profile.ec2_profile[0].name : null)
 
-  # Security groups: only set if provided
   vpc_security_group_ids = length(var.sg_ids) > 0 ? var.sg_ids : null
 
   tags = {
     Name = "${var.name_prefix}-provision"
+  }
+}
+
+# Data source for Ubuntu AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
 }
