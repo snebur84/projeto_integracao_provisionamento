@@ -2,9 +2,9 @@
 
 # Optionally create the staging S3 bucket if not provided
 resource "aws_s3_bucket" "staging" {
-  count        = var.s3_bucket == "" ? 1 : 0
-  bucket       = "${var.name_prefix}-staging-${random_id.bucket_suffix.hex}"
-  acl          = "private"
+  count         = var.s3_bucket == "" ? 1 : 0
+  bucket        = "${var.name_prefix}-staging-${random_id.bucket_suffix.hex}"
+  acl           = "private"
   force_destroy = true
 
   server_side_encryption_configuration {
@@ -20,7 +20,7 @@ resource "aws_s3_bucket" "staging" {
 
 # random suffix used when creating bucket name
 resource "random_id" "bucket_suffix" {
-  count = var.s3_bucket == "" ? 1 : 0
+  count       = var.s3_bucket == "" ? 1 : 0
   byte_length = 4
 }
 
@@ -61,8 +61,8 @@ resource "aws_iam_role_policy" "s3_read_staging" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["s3:GetObject"]
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
         Resource = "arn:aws:s3:::${local.staging_bucket}/*"
       }
     ]
@@ -135,17 +135,17 @@ data "aws_ami" "ubuntu" {
 # user_data script (cloud-init) to ensure SSM agent is present
 data "template_file" "user_data" {
   template = file("${path.module}/templates/install_ssm.sh")
-  vars = { region = var.region }
+  vars     = { region = var.region }
 }
 
 resource "aws_instance" "provision" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
-  key_name               = (length(aws_key_pair.deploy_key.*.key_name) > 0 ? aws_key_pair.deploy_key[0].key_name : null)
-  vpc_security_group_ids = [aws_security_group.provision_sg.id]
-  subnet_id              = var.subnet_id != "" ? var.subnet_id : null
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
-  user_data              = data.template_file.user_data.rendered
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = (length(aws_key_pair.deploy_key.*.key_name) > 0 ? aws_key_pair.deploy_key[0].key_name : null)
+  vpc_security_group_ids      = [aws_security_group.provision_sg.id]
+  subnet_id                   = var.subnet_id != "" ? var.subnet_id : null
+  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  user_data                   = data.template_file.user_data.rendered
   associate_public_ip_address = var.associate_public_ip
 
   root_block_device {
@@ -154,7 +154,7 @@ resource "aws_instance" "provision" {
   }
 
   tags = {
-    Name = "${var.name_prefix}-instance"
+    Name    = "${var.name_prefix}-instance"
     Project = var.name_prefix
   }
 

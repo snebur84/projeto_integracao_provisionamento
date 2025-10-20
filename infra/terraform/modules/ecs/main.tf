@@ -16,7 +16,7 @@ resource "aws_iam_role" "ecs_task_execution" {
   name = "${var.environment}-${var.service_name}-task-exec-role"
 
   assume_role_policy = data.aws_iam_policy_document.ecs_task_execution_assume_role.json
-  tags = var.tags
+  tags               = var.tags
 }
 
 data "aws_iam_policy_document" "ecs_task_execution_assume_role" {
@@ -36,9 +36,9 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
 
 # Task role used by application (optional extra permissions attached by operator)
 resource "aws_iam_role" "ecs_task_role" {
-  name = "${var.environment}-${var.service_name}-task-role"
+  name               = "${var.environment}-${var.service_name}-task-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_role_assume_role.json
-  tags = var.tags
+  tags               = var.tags
 }
 
 data "aws_iam_policy_document" "ecs_task_role_assume_role" {
@@ -80,14 +80,14 @@ resource "aws_ecs_service" "app" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = var.private_subnets
-    security_groups = var.security_groups
+    subnets          = var.private_subnets
+    security_groups  = var.security_groups
     assign_public_ip = false
   }
 
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
-  tags = var.tags
+  tags                               = var.tags
 }
 
 output "cluster_name" {
