@@ -1,16 +1,17 @@
-# Workflow: Detect or create infra (Terraform) and deploy app via SSM
-# Trigger: manual (workflow_dispatch) with `environment` input
+---
+# Deploy workflow: detect or create infra and deploy app via SSM.
+# Trigger: manual (workflow_dispatch) with `environment` input.
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Deployment environment (used as tag and SSM prefix)'
+        description: "Deployment environment (SSM prefix / tag)"
         required: false
-        default: 'prod'
+        default: "prod"
 
 jobs:
   check_infra:
-    name: Check existing infra (EC2)
+    name: Check for existing EC2
     runs-on: ubuntu-latest
     outputs:
       found: ${{ steps.check.outputs.found }}
@@ -23,31 +24,29 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Check for existing EC2 instance by Project tag
+      - name: Check for instance by tag
         id: check
         run: |
           set -euo pipefail
           ENV="${{ github.event.inputs.environment }}"
           TAG_KEY="Project"
-
-          echo "Looking for instances with tag ${TAG_KEY}=${ENV} (state running|pending|stopped|stopping)..."
           INSTANCES=$(aws ec2 describe-instances \
-            --filters "Name=tag:${TAG_KEY},Values=${ENV}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' --output text || true)
+            --filters "Name=tag:${TAG_KEY},Values=${ENV}" \
+            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text || true)
 
           if [ -z "$INSTANCES" ]; then
-            echo "No instance found for ${TAG_KEY}=${ENV}"
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "instance_id=" >> "$GITHUB_OUTPUT"
           else
             FIRST=$(echo "$INSTANCES" | awk '{print $1}')
-            echo "Found instance: $FIRST"
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "instance_id=$FIRST" >> "$GITHUB_OUTPUT"
           fi
 
   terraform:
-    name: Terraform apply (create infra) - runs only if no infra found
+    name: Terraform (create infra)
     runs-on: ubuntu-latest
     needs: check_infra
     if: needs.check_infra.outputs.found == 'false'
@@ -55,18 +54,18 @@ jobs:
       instance_id: ${{ steps.set_outputs.outputs.instance_id }}
       staging_bucket: ${{ steps.set_outputs.outputs.staging_bucket }}
     env:
-      TF_IN_AUTOMATION: "true"
+      TF_IN_AUTOMATION: true
       TF_VAR_public_key: ${{ secrets.TF_VAR_public_key || '' }}
       TF_VAR_tfstate_bucket: ${{ secrets.TF_VAR_tfstate_bucket || '' }}
       TF_VAR_tfstate_lock_table: ${{ secrets.TF_VAR_tfstate_lock_table || '' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: '1.5.0'
+          terraform_version: "1.5.0"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -91,26 +90,26 @@ jobs:
         working-directory: infra/terraform
         run: terraform apply -input=false -auto-approve tfplan
 
-      - name: Export terraform outputs
+      - name: Export outputs
         id: set_outputs
         working-directory: infra/terraform
         run: |
+          set -euo pipefail
           terraform output -json > /tmp/tf_outputs.json
-          cat /tmp/tf_outputs.json
           INSTANCE_ID=$(jq -r '.instance_id.value' /tmp/tf_outputs.json)
           STAGING_BUCKET=$(jq -r '.staging_bucket.value' /tmp/tf_outputs.json)
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
           echo "staging_bucket=$STAGING_BUCKET" >> "$GITHUB_OUTPUT"
 
   deploy:
-    name: Upload + Deploy to EC2 (via SSM)
+    name: Upload and deploy to EC2 via SSM
     runs-on: ubuntu-latest
     needs: [check_infra, terraform]
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ENVIRONMENT: ${{ github.event.inputs.environment }}
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
@@ -120,7 +119,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Determine instance_id and staging bucket to use
+      - name: Determine instance and bucket
         id: prep
         run: |
           set -euo pipefail
@@ -128,57 +127,56 @@ jobs:
           CHECK_INSTANCE="${{ needs.check_infra.outputs.instance_id }}"
           TF_INSTANCE="${{ needs.terraform.outputs.instance_id }}"
           TF_STAGING="${{ needs.terraform.outputs.staging_bucket }}"
-          S3_BUCKET_OVERRIDE="${{ secrets.S3_BUCKET || '' }}"
+          S3_OVERRIDE="${{ secrets.S3_BUCKET || '' }}"
 
           if [ "$CHECK_FOUND" = "true" ] && [ -n "$CHECK_INSTANCE" ]; then
             INSTANCE_ID="$CHECK_INSTANCE"
-            echo "Using existing instance from check_infra: $INSTANCE_ID"
           elif [ -n "$TF_INSTANCE" ]; then
             INSTANCE_ID="$TF_INSTANCE"
-            echo "Using instance from terraform output: $INSTANCE_ID"
           else
-            echo "No instance id available from check_infra or terraform. Failing."
+            echo "No instance id available"
             exit 1
           fi
 
           if [ -n "$TF_STAGING" ] && [ "$TF_STAGING" != "null" ]; then
             STAGING_BUCKET="$TF_STAGING"
-            echo "Using staging bucket from terraform: $STAGING_BUCKET"
-          elif [ -n "$S3_BUCKET_OVERRIDE" ]; then
-            STAGING_BUCKET="$S3_BUCKET_OVERRIDE"
-            echo "Using staging bucket from secrets: $STAGING_BUCKET"
+          elif [ -n "$S3_OVERRIDE" ]; then
+            STAGING_BUCKET="$S3_OVERRIDE"
           else
-            echo "No staging bucket available (terraform did not run and no S3_BUCKET secret configured). Failing."
+            echo "No staging bucket available"
             exit 1
           fi
 
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
           echo "staging_bucket=$STAGING_BUCKET" >> "$GITHUB_OUTPUT"
 
-      - name: Upload provision script to staging bucket
+      - name: Upload provision script
         run: |
+          set -euo pipefail
           STAGING_BUCKET="${{ steps.prep.outputs.staging_bucket }}"
-          aws s3 cp scripts/provision_ubuntu_ec2.sh s3://$STAGING_BUCKET/provision_ubuntu_ec2.sh --acl private
-          echo "Uploaded scripts/provision_ubuntu_ec2.sh to s3://$STAGING_BUCKET/"
+          aws s3 cp scripts/provision_ubuntu_ec2.sh \
+            s3://"$STAGING_BUCKET"/provision_ubuntu_ec2.sh \
+            --acl private
 
-      - name: Ensure dynamic secrets exist in SSM (SECRET_KEY, DB_PASSWORD, PROVISION_API_KEY, superuser)
+      - name: Ensure SSM secrets
         id: ensure_ssm
         env:
           ENV_PATH: "/provision/${{ github.event.inputs.environment }}"
         run: |
           set -euo pipefail
           check_and_put() {
-            local name="$1"; local value="$2"
-            if aws ssm get-parameter --name "$name" --with-decryption >/dev/null 2>&1; then
-              echo "SSM parameter $name exists, skipping"
-            else
-              aws ssm put-parameter --name "$name" --value "$value" --type "SecureString" --overwrite
-              echo "Created SSM parameter $name"
+            name="$1"; val="$2"
+            if aws ssm get-parameter --name "$name" \
+               --with-decryption >/dev/null 2>&1; then
+              return 0
             fi
+            aws ssm put-parameter --name "$name" --value "$val" \
+              --type "SecureString" --overwrite
           }
 
           SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
           DB_PASS=$(openssl rand -base64 18)
+
           if [ -n "${{ secrets.PROVISION_API_KEY }}" ]; then
             PROVISION_KEY="${{ secrets.PROVISION_API_KEY }}"
           else
@@ -197,13 +195,21 @@ jobs:
           check_and_put "$PK" "$PROVISION_KEY"
 
           if [ -n "${{ secrets.DJANGO_SUPERUSER_USERNAME }}" ]; then
-            aws ssm put-parameter --name "$SUP_USER" --value "${{ secrets.DJANGO_SUPERUSER_USERNAME }}" --type "SecureString" --overwrite
+            aws ssm put-parameter --name "$SUP_USER" \
+              --value "${{ secrets.DJANGO_SUPERUSER_USERNAME }}" \
+              --type "SecureString" --overwrite
           fi
+
           if [ -n "${{ secrets.DJANGO_SUPERUSER_EMAIL }}" ]; then
-            aws ssm put-parameter --name "$SUP_EMAIL" --value "${{ secrets.DJANGO_SUPERUSER_EMAIL }}" --type "SecureString" --overwrite
+            aws ssm put-parameter --name "$SUP_EMAIL" \
+              --value "${{ secrets.DJANGO_SUPERUSER_EMAIL }}" \
+              --type "SecureString" --overwrite
           fi
+
           if [ -n "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" ]; then
-            aws ssm put-parameter --name "$SUP_PASS" --value "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" --type "SecureString" --overwrite
+            aws ssm put-parameter --name "$SUP_PASS" \
+              --value "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" \
+              --type "SecureString" --overwrite
           fi
 
           echo "ssm_prefix=$ENV_PATH" >> "$GITHUB_OUTPUT"
@@ -211,63 +217,7 @@ jobs:
           echo "db_pass_param=$DBP" >> "$GITHUB_OUTPUT"
           echo "provision_key_param=$PK" >> "$GITHUB_OUTPUT"
 
-      - name: Upload remote wrapper script to staging bucket (runner builds wrapper and uploads)
-        run: |
-          set -euo pipefail
-          INSTANCE_ID="${{ steps.prep.outputs.instance_id }}"
-          STAGING_BUCKET="${{ steps.prep.outputs.staging_bucket }}"
-          ENV_PATH="/provision/${{ github.event.inputs.environment }}"
-
-          # build a wrapper script that will run on the EC2 instance:
-          cat > /tmp/remote_wrapper.sh <<'WRAP'
-#!/bin/bash
-set -euo pipefail
-
-get_ssm() {
-  aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo ""
-}
-
-ENV_PATH="__ENV_PATH__"
-
-mkdir -p /home/provision
-chown provision:provision /home/provision || true
-
-SECRET_KEY=$(get_ssm "${ENV_PATH}/SECRET_KEY")
-DB_PASSWORD=$(get_ssm "${ENV_PATH}/DB_PASSWORD")
-PROVISION_API_KEY=$(get_ssm "${ENV_PATH}/PROVISION_API_KEY")
-DJANGO_SUPERUSER_USERNAME=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_USERNAME")
-DJANGO_SUPERUSER_EMAIL=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_EMAIL")
-DJANGO_SUPERUSER_PASSWORD=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_PASSWORD")
-
-cat > /tmp/provision.env <<'EOL'
-SECRET_KEY='${SECRET_KEY}'
-MYSQL_PASSWORD='${DB_PASSWORD}'
-PROVISION_API_KEY='${PROVISION_API_KEY}'
-DJANGO_SETTINGS_MODULE=provision.settings
-ALLOWED_HOSTS=*
-DJANGO_SUPERUSER_USERNAME='${DJANGO_SUPERUSER_USERNAME}'
-DJANGO_SUPERUSER_EMAIL='${DJANGO_SUPERUSER_EMAIL}'
-DJANGO_SUPERUSER_PASSWORD='${DJANGO_SUPERUSER_PASSWORD}'
-EOL
-
-mv /tmp/provision.env /home/provision/.env || cp /tmp/provision.env /home/provision/.env
-chown provision:provision /home/provision/.env || true
-chmod 600 /home/provision/.env || true
-
-# download and run the provision script uploaded by the workflow
-aws s3 cp "s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh" /tmp/provision_ubuntu_ec2.sh
-chmod +x /tmp/provision_ubuntu_ec2.sh
-/bin/bash /tmp/provision_ubuntu_ec2.sh
-WRAP
-
-          # Replace placeholder with actual ENV_PATH
-          sed -i "s|__ENV_PATH__|${ENV_PATH}|g" /tmp/remote_wrapper.sh
-
-          # upload wrapper to staging bucket
-          aws s3 cp /tmp/remote_wrapper.sh s3://$STAGING_BUCKET/remote_wrapper.sh --acl private
-          echo "Uploaded wrapper to s3://$STAGING_BUCKET/remote_wrapper.sh"
-
-      - name: Send SSM RunCommand to download and run remote wrapper on EC2
+      - name: Send SSM command to run provision script
         id: send_ssm
         env:
           INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
@@ -277,41 +227,51 @@ WRAP
           INSTANCE_ID="${INSTANCE_ID}"
           STAGING_BUCKET="${STAGING_BUCKET}"
 
-          # Instruct EC2 to download and run the uploaded wrapper script
+          PART1='aws s3 cp s3://'
+          PART2="${STAGING_BUCKET}"
+          PART3='/provision_ubuntu_ec2.sh /tmp/provision_ubuntu_ec2.sh'
+          CMD_DOWNLOAD="$PART1$PART2$PART3"
+
+          CMD_A=' && chmod +x /tmp/provision_ubuntu_ec2.sh'
+          CMD_B=' && /bin/bash /tmp/provision_ubuntu_ec2.sh'
+          CMD_FULL="$CMD_DOWNLOAD$CMD_A$CMD_B"
+
+          CMD_JSON=$(printf '["%s"]' "$CMD_FULL")
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy from GitHub Actions - download wrapper and execute provision script" \
-            --parameters commands=["aws s3 cp s3://${STAGING_BUCKET}/remote_wrapper.sh /tmp/remote_wrapper.sh && chmod +x /tmp/remote_wrapper.sh && /bin/bash /tmp/remote_wrapper.sh"] \
+            --comment "Deploy: download and run provision script" \
+            --parameters commands="$CMD_JSON" \
             --timeout-seconds 900 \
             --query "Command.CommandId" --output text)
 
-          echo "Sent SSM command: $CMD_ID"
           echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for SSM command result
+      - name: Wait for SSM result
         env:
           INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
         run: |
           set -euo pipefail
           CMD_ID=${{ steps.send_ssm.outputs.command_id }}
           INSTANCE_ID="${INSTANCE_ID}"
-          echo "Polling SSM invocation status for command $CMD_ID on instance $INSTANCE_ID ..."
+
           ATTEMPTS=0
           while [ $ATTEMPTS -lt 120 ]; do
             sleep 5
             ((ATTEMPTS++))
-            STATUS=$(aws ssm list-command-invocations --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" --query "CommandInvocations[0].Status" --output text 2>/dev/null || echo "Unknown")
-            echo "SSM invocation status: $STATUS"
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" \
+              --query "CommandInvocations[0].Status" \
+              --output text 2>/dev/null || echo "Unknown")
+            echo "SSM status: $STATUS"
             if [ "$STATUS" = "Success" ]; then
-              echo "SSM command succeeded"
               exit 0
             fi
             if [[ "$STATUS" =~ ^(Failed|Cancelled|TimedOut|Undeliverable)$ ]]; then
-              echo "SSM command finished with non-success status: $STATUS"
-              aws ssm list-command-invocations --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" || true
+              aws ssm list-command-invocations \
+                --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" || true
               exit 1
             fi
           done
-          echo "Timeout waiting for SSM command"
           exit 1
