@@ -1,153 +1,188 @@
-# Projeto de Provisionamento
+# Projeto: Integração de Provisionamento
 
-Este repositório implementa um sistema de provisionamento de dispositivos com:
-- Modelagem mestre/detalhe: DeviceProfile (perfil) ⇢ DeviceConfig (dispositivo) (1→N).
-- Registro de tentativas de provisionamento em um model separado: Provisioning.
-- API de provisionamento (download de configuração) com suporte a OAuth2 (django-oauth-toolkit) e fallback por API key.
-- Painel administrativo, views CRUD e telas mestre/detalhe (profile + inline devices).
+Este repositório contém a aplicação Django usada para gerar arquivos de provisionamento (XML / CFG) para aparelhos, com templates armazenados em MongoDB e dados de dispositivo/perfil em MySQL. Também há scripts para deploy local e infração mínima para deploy em AWS (EC2 + SSM), além de workflows GitHub Actions para automatizar o provisionamento.
 
-Este README resume como configurar, executar e testar o sistema após as alterações recentes (integração OAuth2, models e telas mestre/detalhe).
+Sumário rápido
+- Deploy local (desenvolvimento / testes)
+- Deploy na AWS (EC2 + SSM, com opção Terraform via infra/terraform)
+- Resumo da interface de gestão (management UI)
+- API de download de configuração (/api/download-xml/)
+- Como testar a API com Postman
+- Troubleshooting e verificações úteis
 
-Sumário
-- Requisitos
-- Instalação rápida
-- Variáveis de ambiente importantes
-- Migrations e bancos
-- OAuth2 (django-oauth-toolkit) — instalação e uso
-- Endpoints principais e testes (curl)
-- Interface web (mestre/detalhe)
-- Migração de dados existentes
-- Segurança e boas práticas
-- Troubleshooting
+----------------------------------------------------------------
+1) Deploy local (rápido)
+Pré-requisitos
+- Python 3.10+ (ou conforme requirements.txt)
+- MySQL local acessível
+- MongoDB local acessível
+- Git
+- (Opcional) Docker e docker-compose para execução em container
 
-Requisitos
-- Python 3.8+
-- Django (versão do projeto)
-- MySQL (ou outro banco configurado)
-- MongoDB (opcional, usado para templates)
-- poetry ou pip para dependências
+Observação importante sobre o script de provisionamento local
+- A forma recomendada de levantar e preparar a aplicação localmente é executar o script `scripts/provision_ubuntu_full.sh`.
+- Esse script:
+  - atualiza o sistema (apt-get upgrade/instala pacotes necessários),
+  - cria variáveis e arquivos de ambiente necessários (escreve `.env`),
+  - prepara banco(s), virtualenv, dependências, migrations e static files,
+  - e ao final inicia um prompt para você inserir o usuário e senha do django-admin (cria o superuser se informado).
+- Antes de executar, siga os passos abaixo para garantir permissões corretas.
 
-Instalação rápida (development)
-1. Clone:
+Passos (recomendado)
+1. Clone o repo e entre no diretório da app:
+   ```bash
    git clone https://github.com/snebur84/projeto_integracao_provisionamento.git
-   cd projeto_integracao_provisionamento/app/provision
+   cd projeto_integracao_provisionamento
+   ```
 
-2. Crie e ative seu virtualenv e instale dependências. Exemplo com poetry:
-   poetry install
+2. Adicione sua chave pública SSH / verifique se você tem acesso local se necessário (opcional).
 
-   Caso não use poetry, instale as dependências listadas no requirements.
+3. Adicione o seu usuário ao grupo docker (se for usar Docker localmente)
+   - Adicionar o usuário atual ao grupo `docker`:
+     ```bash
+     sudo usermod -aG docker $USER
+     ```
+   - Depois desse comando é necessário fazer logoff e login (ou reiniciar a sessão) para que a nova permissão de grupo seja aplicada. Execute logoff/login antes de prosseguir com o passo de execução do script.
 
-3. Instale django-oauth-toolkit (necessário para OAuth2):
-   poetry add django-oauth-toolkit
-   # ou
-   pip install django-oauth-toolkit
+4. Garanta permissão de execução no script de provisionamento:
+   ```bash
+   chmod +x scripts/provision_ubuntu_full.sh
+   ```
 
-4. Configure variáveis de ambiente (ver seção abaixo).
+5. Execute o script de provisionamento local:
+   - Recomenda-se executar com sudo para que o script consiga instalar pacotes e configurar o sistema:
+     ```bash
+     sudo bash scripts/provision_ubuntu_full.sh
+     ```
+   - O script irá:
+     - atualizar o servidor,
+     - gerar/criar variáveis e escrever o arquivo `.env` (se necessário),
+     - instalar dependências (virtualenv, pip packages),
+     - aplicar migrations e `collectstatic`,
+     - configurar serviços (nginx, systemd/gunicorn) conforme o fluxo local,
+     - no final, solicitará interativamente o usuário e senha do django-admin para a criação do superuser.
 
-5. Gere e aplique migrations:
-   python manage.py makemigrations
-   python manage.py migrate
+6. Após término do script:
+   - Se o script configurou systemd/gunicorn/nginx, verifique status dos serviços:
+     ```bash
+     sudo systemctl status provision
+     sudo systemctl status nginx
+     sudo journalctl -u provision -n 200
+     ```
+   - Acesse localmente:
+     - Login: http://<ip do servidor>
+     - Admin: http://<ip do servidor>/admin
+     - API: http://<ip do servidor>/api/
 
-6. Crie superuser (administrador Django):
-   python manage.py createsuperuser
+Observações adicionais
+- Se você preferir não instalar pacotes no host, mantenha e use `docker-compose.yml` (desenvolvimento em container). O script `scripts/provision_ubuntu_full.sh` é a opção "instala no host" que facilita testes de integração em uma VM Ubuntu.
+- Nunca comite arquivos `.env` com segredos no repositório. Use `.env.example` como referência.
 
-7. Execute o servidor:
-   python manage.py runserver
+----------------------------------------------------------------
+2) Deploy na AWS (resumo / fluxo usado neste projeto)
+Opções suportadas
+- Fluxo recomendado (automático): GitHub Actions workflow `.github/workflows/deploy-terraform-ec2.yml`
+  - Detecta uma EC2 existente por tag (Project = environment) ou executa Terraform (infra/terraform) para criar infra.
+  - Faz upload do script `scripts/provision_ubuntu_ec2.sh` para um bucket S3 de staging.
+  - Gera (se necessário) secrets dinâmicos no SSM Parameter Store (SECRET_KEY, DB_PASSWORD, PROVISION_API_KEY) como SecureString.
+  - Invoca SSM RunCommand para baixar e executar o script na instância (o script instala dependências, configura venv, aplica migrations, cria systemd unit e configura nginx).
 
-Variáveis de ambiente importantes
-- DJANGO_SECRET_KEY — secret do Django.
-- DJANGO_DEBUG — 0 ou 1.
-- DJANGO_ALLOWED_HOSTS — hosts permitidos (comma-separated).
-- MYSQL_* ou DJANGO_DB_* — credenciais do banco relacional.
-- MONGODB_* — configuração do MongoDB (se usado).
-- PROVISION_API_KEY — chave utilizada como fallback para dispositivos simples (opcional).
-- OAUTH_ACCESS_TOKEN_EXPIRE, OAUTH_REFRESH_TOKEN_EXPIRE — timeouts de tokens OAuth.
-- EMAIL_* — servidor de e-mail para password reset.
+Pré-requisitos para o workflow funcionar
+- GitHub Secrets/Variables configurados conforme descrito em `infra/README.md` e no workflow (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, etc).
+- EC2 (quando reutilizada) deve:
+  - ter Amazon SSM Agent instalado e registrada em Systems Manager
+  - ter um Instance Profile com política `AmazonSSMManagedInstanceCore` e permissão `ssm:GetParameter` para ler parâmetros
+  - estar na mesma região do workflow
+  - ter tag `Project = <environment>` (workflow usa isso para detectar instância)
 
-Models principais (resumo)
-- DeviceProfile: perfil do dispositivo (sip_server, port_server, protocol_type, template_ref, metadata, timestamps).
-- DeviceConfig: dispositivo (profile FK, identifier, mac_address, user_register, passwd_register, display_name, counters e IPs).
-- Provisioning: registro por tentativa (vendor, model, version, public_ip, private_ip, status, template_ref, user_agent, metadata, timestamps).
+Como iniciar o deploy via GitHub
+- UI: Actions → deploy-terraform-ec2 → Run workflow → input `environment` (ex: `prod`)
+- CLI (gh):
+  ```bash
+  gh workflow run deploy-terraform-ec2.yml --field environment=prod
+  ```
 
-Master/Detail (UI)
-- Tela mestre/detalhe: criar/editar DeviceProfile e, na mesma tela, criar/editar DeviceConfig associados via inline formset.
-  - URL: /profiles/ (list), /profiles/create/ (novo), /profiles/<pk>/edit/ (editar).
-- Dispositivos também têm CRUD próprio:
-  - /devices/, /devices/create/, /devices/<pk>/, /devices/<pk>/edit/
+----------------------------------------------------------------
+3) Resumo da interface de gestão (Management UI)
+- A aplicação fornece uma interface administrativa (Django Admin) para:
+  - Gerenciar Devices (dispositivos): registrar identifiers e atributos do aparelho.
+  - Gerenciar Profiles (perfis): definir parâmetros SIP/linha/voip e demais campos usados no template.
+  - Gerenciar Templates: armazenar templates de configuração (XML/CFG) no MongoDB com metadados (modelo, extensão).
+  - Visualizar e editar templates atribuídos a perfis.
+- Papel da interface: permitir operadores/criadores de perfil inserir/editar templates e vincular perfis a dispositivos para que a API de provisionamento gere o arquivo apropriado.
 
-OAuth2 (django-oauth-toolkit) — instalação e uso
-1. Instale a biblioteca (veja acima) e aplique migrations:
-   python manage.py migrate
+----------------------------------------------------------------
+4) API de download de configuração
+Endpoint principal
+- GET `/api/download-xml/` (ponto de entrada principal)  
+- Também pode aceitar um "filename" na URL, por exemplo:
+  `GET /api/download-xml/config.cfg`
 
-2. Crie um OAuth2 Application (client).
-   - Opção A (admin): Acesse /admin/ → Applications → Add application e defina:
-     - name, client type (confidential/public), authorization grant type (client credentials para M2M ou authorization code para usuários).
-     - redirect URIs se usar authorization code.
-   - Opção B (linha de comando): use o management command criado:
-     python manage.py create_oauth_application --name provision-m2m --client-type confidential --grant-type client-credentials --scopes "provision read"
-     O comando imprime client_id e client_secret.
+Comportamento
+- A rota retorna um arquivo de configuração (XML ou CFG) gerado a partir do template armazenado no Mongo e dados (device/profile) vindo do MySQL.
+- Se `filename` terminar em `.cfg` a response será `text/plain` (ext = cfg); caso contrário retorna `application/xml` (ext = xml).
+- Placeholders do tipo `%%nome%%` no template são substituídos por valores vindos do contexto (dados do device/profile). Booleanos são convertidos para `1`/`0`.
+- Autenticação: suporte a Bearer token (`Authorization: Bearer <token>`) ou `X-API-KEY` header conforme sua configuração.
 
-3. Obter token client_credentials (exemplo curl):
-   curl -X POST -u "<client_id>:<client_secret>" \
-     -d "grant_type=client_credentials&scope=provision" \
-     https://<host>/o/token/
+Cabeçalhos importantes
+- `Authorization: Bearer <ACCESS_TOKEN>`  (ou) `X-API-KEY: <KEY>`
+- `User-Agent: Fabricante Modelo Versao Mac` (alguns provisionadores esperam User-Agent específico)
 
-4. Usar token para chamar endpoints protegidos:
-   curl -H "Authorization: Bearer <access_token>" https://<host>/api/whoami/
-   ou para download de configuração:
-   curl -H "Authorization: Bearer <access_token>" https://<host>/api/download-xml/
+Códigos de status esperados
+- `200 OK` — arquivo retornado
+- `403 Forbidden` — falta de permissão / erro de render
+- `404 Not Found` — template ou device não encontrado
+- `500` — erro do servidor (ver logs)
 
-Fallback para dispositivos simples
-- O endpoint de download (download_config) tenta autenticar por OAuth2 (exigindo scope `provision` ou `read`). Se não houver token válido, faz fallback para PROVISION_API_KEY (se configurado), preservando compatibilidade com dispositivos que não suportam OAuth.
-- Recomendação: migrar dispositivos/gateways para client_credentials e remover o fallback quando todos os clientes estiverem portados.
+----------------------------------------------------------------
+5) Como testar a API com Postman
+Preparar
+- Abra o Postman e crie uma nova Collection (ex: Provisionamento).
+- Crie uma nova requisição GET.
 
-Documentação OpenAPI / Swagger
-- A UI swagger está disponível em /api/docs/ e a schema em /api/schema/.
-- O drf-spectacular foi configurado com um security scheme OAuth2 (client credentials) — use o fluxo manualmente para obter token e cole no campo de autorização da UI.
+Configuração da requisição
+- URL:
+  - Local: `http://<ip do servidor>/api/download-xml/`
+  - Remoto (prod): `https://your.domain.tld/api/download-xml/config.xml`  (ou sem filename)
+- Headers:
+  - `Authorization: Bearer <TOKEN>`  (ou) `X-API-KEY: <KEY>`
+  - `User-Agent: Fabricante Modelo Versao Mac`
 
-Endpoints principais (resumo)
-- /api/download-xml/(<filename>/) — endpoint de provisionamento principal (GET). Espera User-Agent no formato: "vendor model version <mac|identifier>".
-- /api/whoami/ — exemplo de endpoint protegido por OAuth2 (scope read).
-- /o/ — endpoints do django-oauth-toolkit: /o/token/, /o/authorize/, /o/revoke_token/, /o/introspect/, /o/applications/ (admin UI e APIs).
-- Admin: /admin/ — gerenciar models e Applications.
+Exemplo de fluxo no Postman
+1. Defina método `GET` e URL.
+2. No tab "Headers" adicione `Authorization` e `User-Agent`.
+3. Envie a requisição.
+4. Avalie a resposta:
+   - Verifique HTTP `200` e o body retornado tem a configuração (XML/CFG).
+   - Confirme que placeholders `%%sipserver%%` (e similares) foram substituídos por valores reais.
+   - Verifique `Content-Type`: `application/xml; charset=utf-8` para XML ou `text/plain` para cfg.
 
-Testes e validação (rápido)
-- Testar token issuance e acesso:
-  1) Criar Application (client credentials).
-  2) curl para /o/token/ (obter access_token).
-  3) curl com Authorization Bearer para /api/whoami/ e /api/download-xml/.
-- Testar fallback:
-  - Configure PROVISION_API_KEY no env e chame /api/download-xml/ informando X-API-KEY header.
+Testes adicionais
+- Forçar `.cfg`:
+  `GET https://your.domain.tld/api/download-xml/config.cfg`
+- Sem filename (usa XML por padrão):
+  `GET https://your.domain.tld/api/download-xml/`
 
-Migração de dados existentes
-- Se já houver dados em DeviceConfig e você quer extrair perfis:
-  1) Escreva uma data migration que:
-     - Crie perfis padrão (ou perfis a partir de valores comuns).
-     - Atribua DeviceConfig.profile = perfil correspondente.
-  2) Em produção, teste em staging antes de migrar.
-- Se quiser preservar histórico de attempts_provisioning em registros Provisioning, gere um script/migration que crie registros Provisioning a partir do estado atual (opcional).
+----------------------------------------------------------------
+6) Troubleshooting rápido
+- "NameError: get_mongo_client is not defined" — verifique import em `app/provision/api/views.py` e que `api.utils.mongo.get_mongo_client` está disponível.
+- Templates com placeholders não substituídos: confirme que o código aplica a substituição `%%nome%%` após render e que context contém as chaves corretas (lowercase).
+- Erro ao criar DB: confirme variáveis MySQL no `.env` e permissões do usuário.
+- SSM / deploy AWS: se o RunCommand não chegar ao host, verifique se a instância tem SSM Agent ativo e aparece em Systems Manager → Managed Instances.
 
-Boas práticas de segurança / operações
-- Armazene client_secrets e PROVISION_API_KEY em secret manager (não no código).
-- Habilite HTTPS em produção e configure SESSION_COOKIE_SECURE/CSRF_COOKIE_SECURE/HSTS.
-- Rotacione client_secrets e API keys periodicamente.
-- Evite logar senhas/segredos; se for necessário armazenar tokens ou credenciais, proteja com KMS.
-- Para proteção contra brute-force em autenticação, considere tools como django-axes.
+----------------------------------------------------------------
+7) Boas práticas e segurança
+- Nunca commit `.env` com segredos. Use SSM Parameter Store (SecureString) ou Secrets Manager para armazenar segredos em produção.
+- Prefira GitHub OIDC + assume-role em Actions em vez de long-lived AWS keys.
+- Mantenha o state do Terraform em um backend S3 com DynamoDB locking.
+- Restrinja o acesso SSH (ou prefira Session Manager/SSM).
 
-Ajustes sugeridos / trabalho pendente (para chegar a "pronto em produção")
-- Garantir que todos os endpoints sensíveis sejam protegidos por OAuth2 e scopes apropriados (ainda há endpoints com proteção exemplar).
-- Revisar e remover fallback PROVISION_API_KEY quando migrar todos os dispositivos.
-- Criar testes de integração cobrindo issuance de token, introspecção, e autorização por scopes.
-- Adicionar rotinas de monitoramento e auditoria de tokens emitidos/revocados.
+----------------------------------------------------------------
+8) Contatos / próximos passos
+Se precisar que eu:
+- gere o Postman collection export (JSON) pronto,
+- atualize exemplos de `.env`,
+- abra PR com melhorias na documentação,
+avise e eu faço os artefatos.
 
-Troubleshooting rápido
-- Erro 500/ImportError sobre oauth2_provider: instale django-oauth-toolkit e rode migrate.
-- Rotas /api/whoami/ não encontradas: confirme que `api.urls` está incluído em provision/urls.py e que app `api` está em INSTALLED_APPS.
-- Erro em admin Application: verifique migrações e privilégios do usuário admin.
-
-Contribuição
-- Abra issues/PRs com melhorias, correções ou perguntas.
-- Se for proposta de alteração em produção (rotas de autenticação, remoção de fallback), faça em branch separado e teste em staging.
-
-Contato
-- Desenvolvedor/owner: @snebur84 (GitHub).
+Obrigado — bom deploy!
