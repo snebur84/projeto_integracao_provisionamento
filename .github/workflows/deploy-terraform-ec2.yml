@@ -1,5 +1,5 @@
 # Workflow: Detect or create infra (Terraform) and deploy app via SSM
-# Manual trigger (workflow_dispatch) with `environment` input
+# Trigger: manual (workflow_dispatch) with `environment` input
 on:
   workflow_dispatch:
     inputs:
@@ -211,28 +211,24 @@ jobs:
           echo "db_pass_param=$DBP" >> "$GITHUB_OUTPUT"
           echo "provision_key_param=$PK" >> "$GITHUB_OUTPUT"
 
-      - name: Send SSM RunCommand to prepare .env and execute provision script
-        id: send_ssm
-        env:
-          INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
-          STAGING_BUCKET: ${{ steps.prep.outputs.staging_bucket }}
-          ENV_PATH: "/provision/${{ github.event.inputs.environment }}"
+      - name: Upload remote wrapper script to staging bucket (runner builds wrapper and uploads)
         run: |
           set -euo pipefail
-          INSTANCE_ID="${INSTANCE_ID}"
-          STAGING_BUCKET="${STAGING_BUCKET}"
-          ENV_PATH="${ENV_PATH}"
+          INSTANCE_ID="${{ steps.prep.outputs.instance_id }}"
+          STAGING_BUCKET="${{ steps.prep.outputs.staging_bucket }}"
+          ENV_PATH="/provision/${{ github.event.inputs.environment }}"
 
-          REMOTE_SCRIPT=$(cat <<'EOF'
+          # build a wrapper script that will run on the EC2 instance:
+          cat > /tmp/remote_wrapper.sh <<'WRAP'
 #!/bin/bash
 set -euo pipefail
-export PATH=/usr/local/bin:/usr/bin:/bin
 
 get_ssm() {
   aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo ""
 }
 
-ENV_PATH="__ENV_PATH_REPLACEME__"
+ENV_PATH="__ENV_PATH__"
+
 mkdir -p /home/provision
 chown provision:provision /home/provision || true
 
@@ -243,7 +239,7 @@ DJANGO_SUPERUSER_USERNAME=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_USERNAME")
 DJANGO_SUPERUSER_EMAIL=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_EMAIL")
 DJANGO_SUPERUSER_PASSWORD=$(get_ssm "${ENV_PATH}/DJANGO_SUPERUSER_PASSWORD")
 
-cat > /tmp/provision.env <<EOL
+cat > /tmp/provision.env <<'EOL'
 SECRET_KEY='${SECRET_KEY}'
 MYSQL_PASSWORD='${DB_PASSWORD}'
 PROVISION_API_KEY='${PROVISION_API_KEY}'
@@ -258,20 +254,35 @@ mv /tmp/provision.env /home/provision/.env || cp /tmp/provision.env /home/provis
 chown provision:provision /home/provision/.env || true
 chmod 600 /home/provision/.env || true
 
+# download and run the provision script uploaded by the workflow
 aws s3 cp "s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh" /tmp/provision_ubuntu_ec2.sh
 chmod +x /tmp/provision_ubuntu_ec2.sh
 /bin/bash /tmp/provision_ubuntu_ec2.sh
-EOF
-)
+WRAP
 
-          # Replace placeholder with actual ENV_PATH (safe substitution)
-          REMOTE_SCRIPT="${REMOTE_SCRIPT//__ENV_PATH_REPLACEME__/$ENV_PATH}"
+          # Replace placeholder with actual ENV_PATH
+          sed -i "s|__ENV_PATH__|${ENV_PATH}|g" /tmp/remote_wrapper.sh
 
+          # upload wrapper to staging bucket
+          aws s3 cp /tmp/remote_wrapper.sh s3://$STAGING_BUCKET/remote_wrapper.sh --acl private
+          echo "Uploaded wrapper to s3://$STAGING_BUCKET/remote_wrapper.sh"
+
+      - name: Send SSM RunCommand to download and run remote wrapper on EC2
+        id: send_ssm
+        env:
+          INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
+          STAGING_BUCKET: ${{ steps.prep.outputs.staging_bucket }}
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="${INSTANCE_ID}"
+          STAGING_BUCKET="${STAGING_BUCKET}"
+
+          # Instruct EC2 to download and run the uploaded wrapper script
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy from GitHub Actions - prepare env and run provision script" \
-            --parameters commands=["$REMOTE_SCRIPT"] \
+            --comment "Deploy from GitHub Actions - download wrapper and execute provision script" \
+            --parameters commands=["aws s3 cp s3://${STAGING_BUCKET}/remote_wrapper.sh /tmp/remote_wrapper.sh && chmod +x /tmp/remote_wrapper.sh && /bin/bash /tmp/remote_wrapper.sh"] \
             --timeout-seconds 900 \
             --query "Command.CommandId" --output text)
 
