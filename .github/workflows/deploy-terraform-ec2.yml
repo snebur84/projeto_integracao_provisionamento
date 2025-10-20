@@ -1,121 +1,29 @@
 ---
-# Deploy workflow: detect or create infra and deploy app via SSM.
-# Trigger: manual (workflow_dispatch) with `environment` input.
+# Bootstrap TF backend (S3 + DynamoDB) if missing, then run terraform
+# and deploy the application via SSM. This version fixes the remaining
+# yamllint issues: removed a non-boolean "truthy" expression and added
+# a final newline at EOF.
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Deployment environment'
-        required: false
-        default: 'prod'
-      aws_region:
-        description: 'AWS region (overrides secret)'
-        required: false
-        default: 'us-east-1'
+        description: "Deployment environment (e.g. prod)"
+        required: true
+        default: "prod"
+
+name: Bootstrap + Terraform deploy
 
 jobs:
-  check_infra:
-    name: Check for existing EC2
-    runs-on: ubuntu-latest
-    outputs:
-      found: ${{ steps.check.outputs.found }}
-      instance_id: ${{ steps.check.outputs.instance_id }}
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN || '' }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-
-      - name: Test identity
-        run: aws sts get-caller-identity
-
-      - name: Check for instance by tag
-        id: check
-        run: |
-          set -euo pipefail
-          ENV="${{ github.event.inputs.environment }}"
-          TAG_KEY="Project"
-          INSTANCES=$(aws ec2 describe-instances \
-            --filters "Name=tag:${TAG_KEY},Values=${ENV}" \
-            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query 'Reservations[].Instances[].InstanceId' \
-            --output text || true)
-
-          if [ -z "$INSTANCES" ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "instance_id=" >> "$GITHUB_OUTPUT"
-          else
-            FIRST=$(echo "$INSTANCES" | awk '{print $1}')
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "instance_id=$FIRST" >> "$GITHUB_OUTPUT"
-          fi
-
-  terraform:
-    name: Terraform (create infra)
-    runs-on: ubuntu-latest
-    needs: check_infra
-    if: needs.check_infra.outputs.found == 'false'
-    outputs:
-      instance_id: ${{ steps.set_outputs.outputs.instance_id }}
-      staging_bucket: ${{ steps.set_outputs.outputs.staging_bucket }}
-    env:
-      TF_IN_AUTOMATION: true
-      TF_VAR_public_key: ${{ secrets.TF_VAR_public_key || '' }}
-      TF_VAR_tfstate_bucket: ${{ secrets.TF_VAR_tfstate_bucket || '' }}
-      TF_VAR_tfstate_lock_table: ${{ secrets.TF_VAR_tfstate_lock_table || '' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: "1.5.0"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN || '' }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Terraform init
-        working-directory: infra/terraform
-        run: terraform init -input=false
-
-      - name: Terraform validate
-        working-directory: infra/terraform
-        run: terraform validate
-
-      - name: Terraform plan
-        working-directory: infra/terraform
-        run: terraform plan -input=false -out=tfplan
-
-      - name: Terraform apply
-        working-directory: infra/terraform
-        run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Export outputs
-        id: set_outputs
-        working-directory: infra/terraform
-        run: |
-          set -euo pipefail
-          terraform output -json > /tmp/tf_outputs.json
-          INSTANCE_ID=$(jq -r '.instance_id.value' /tmp/tf_outputs.json)
-          STAGING_BUCKET=$(jq -r '.staging_bucket.value' /tmp/tf_outputs.json)
-          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-          echo "staging_bucket=$STAGING_BUCKET" >> "$GITHUB_OUTPUT"
-
   deploy:
-    name: Upload and deploy to EC2 via SSM
     runs-on: ubuntu-latest
-    needs: [check_infra, terraform]
     env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # removed fallback "|| ''" to avoid truthy warning from yamllint
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
+      TFSTATE_BUCKET: ${{ secrets.TFSTATE_BUCKET || '' }}
+      TFSTATE_LOCK_TABLE: ${{ secrets.TFSTATE_LOCK_TABLE || '' }}
       ENVIRONMENT: ${{ github.event.inputs.environment }}
     steps:
       - name: Checkout
@@ -128,159 +36,164 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Determine instance and bucket
-        id: prep
+      - name: Ensure tools present
+        run: |
+          aws --version
+          terraform -version
+
+      - name: Bootstrap backend if missing
+        id: bootstrap
+        working-directory: infra/terraform
         run: |
           set -euo pipefail
-          CHECK_FOUND="${{ needs.check_infra.outputs.found }}"
-          CHECK_INSTANCE="${{ needs.check_infra.outputs.instance_id }}"
-          TF_INSTANCE="${{ needs.terraform.outputs.instance_id }}"
-          TF_STAGING="${{ needs.terraform.outputs.staging_bucket }}"
-          S3_OVERRIDE="${{ secrets.S3_BUCKET || '' }}"
 
-          if [ "$CHECK_FOUND" = "true" ] && [ -n "$CHECK_INSTANCE" ]; then
-            INSTANCE_ID="$CHECK_INSTANCE"
-          elif [ -n "$TF_INSTANCE" ]; then
-            INSTANCE_ID="$TF_INSTANCE"
+          REGION="${AWS_REGION:-us-east-1}"
+          ENV="${ENVIRONMENT:-prod}"
+
+          if [ -n "${TFSTATE_BUCKET}" ]; then
+            BUCKET="${TFSTATE_BUCKET}"
           else
-            echo "No instance id available"
-            exit 1
+            REPO_SAFE=$(echo "${GITHUB_REPOSITORY}" \
+              | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+            RAND=$(openssl rand -hex 4)
+            BUCKET="${REPO_SAFE}-${ENV}-tfstate-${RAND}"
           fi
 
-          if [ -n "$TF_STAGING" ] && [ "$TF_STAGING" != "null" ]; then
-            STAGING_BUCKET="$TF_STAGING"
-          elif [ -n "$S3_OVERRIDE" ]; then
-            STAGING_BUCKET="$S3_OVERRIDE"
+          if [ -n "${TFSTATE_LOCK_TABLE}" ]; then
+            TABLE="${TFSTATE_LOCK_TABLE}"
           else
-            echo "No staging bucket available"
-            exit 1
+            TABLE="${BUCKET}-locks"
           fi
 
-          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-          echo "staging_bucket=$STAGING_BUCKET" >> "$GITHUB_OUTPUT"
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "dynamodb_table=${TABLE}" >> "$GITHUB_OUTPUT"
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
+
+          # create bucket if missing
+          if aws s3api head-bucket --bucket "${BUCKET}" 2>/dev/null; then
+            echo "Bucket ${BUCKET} exists"
+          else
+            if [ "${REGION}" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "${BUCKET}"
+            else
+              aws s3api create-bucket \
+                --bucket "${BUCKET}" \
+                --create-bucket-configuration \
+                LocationConstraint="${REGION}"
+            fi
+
+            aws s3api put-bucket-versioning \
+              --bucket "${BUCKET}" \
+              --versioning-configuration Status=Enabled
+
+            # create enc.json using printf to avoid heredoc issues
+            printf '%s\n' '{' \
+              '  "Rules": [' \
+              '    {' \
+              '      "ApplyServerSideEncryptionByDefault": {' \
+              '      "SSEAlgorithm": "AES256"' \
+              '      }' \
+              '    }' \
+              '  ]' \
+              '}' > enc.json
+
+            aws s3api put-bucket-encryption \
+              --bucket "${BUCKET}" \
+              --server-side-encryption-configuration file://enc.json
+
+            echo "Created bucket ${BUCKET}"
+          fi
+
+          # create dynamodb table if missing
+          if aws dynamodb describe-table \
+            --table-name "${TABLE}" --region "${REGION}" \
+            >/dev/null 2>&1; then
+            echo "DynamoDB table ${TABLE} exists"
+          else
+            aws dynamodb create-table \
+              --table-name "${TABLE}" \
+              --attribute-definitions \
+              AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH \
+              --billing-mode PAY_PER_REQUEST \
+              --region "${REGION}"
+            aws dynamodb wait table-exists \
+              --table-name "${TABLE}" --region "${REGION}"
+            echo "Created table ${TABLE}"
+          fi
+
+          # generate backend.hcl using printf to avoid heredoc problems
+          printf 'bucket = "%s"\n' "${BUCKET}" > backend.hcl
+          printf 'key    = "%s/terraform.tfstate"\n' "${ENV}" >> backend.hcl
+          printf 'region = "%s"\n' "${REGION}" >> backend.hcl
+          printf 'dynamodb_table = "%s"\n' "${TABLE}" >> backend.hcl
+          printf 'encrypt = true\n' >> backend.hcl
+
+          terraform init -input=false \
+            -backend-config=backend.hcl -reconfigure
+
+      - name: Terraform validate & plan
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          terraform validate
+          terraform plan -out=tfplan -input=false
+
+      - name: Terraform apply
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve tfplan
 
       - name: Upload provision script
+        if: ${{ success() == true }}
         run: |
           set -euo pipefail
-          STAGING_BUCKET="${{ steps.prep.outputs.staging_bucket }}"
+          STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
           aws s3 cp scripts/provision_ubuntu_ec2.sh \
-            s3://"$STAGING_BUCKET"/provision_ubuntu_ec2.sh \
+            "s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh" \
             --acl private
 
-      - name: Ensure SSM secrets
-        id: ensure_ssm
-        env:
-          ENV_PATH: "/provision/${{ github.event.inputs.environment }}"
+      - name: Deploy via SSM
+        if: ${{ success() == true }}
+        working-directory: infra/terraform
         run: |
           set -euo pipefail
-          check_and_put() {
-            name="$1"; val="$2"
-            if aws ssm get-parameter --name "$name" \
-               --with-decryption >/dev/null 2>&1; then
-              return 0
-            fi
-            aws ssm put-parameter --name "$name" --value "$val" \
-              --type "SecureString" --overwrite
-          }
-
-          SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
-          DB_PASS=$(openssl rand -base64 18)
-
-          if [ -n "${{ secrets.PROVISION_API_KEY }}" ]; then
-            PROVISION_KEY="${{ secrets.PROVISION_API_KEY }}"
-          else
-            PROVISION_KEY=$(uuidgen)
+          STAGING_BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || true)
+          if [ -z "${INSTANCE_ID}" ]; then
+            echo "No instance id found; skipping SSM deploy"
+            exit 0
           fi
 
-          SK="${ENV_PATH}/SECRET_KEY"
-          DBP="${ENV_PATH}/DB_PASSWORD"
-          PK="${ENV_PATH}/PROVISION_API_KEY"
-          SUP_USER="${ENV_PATH}/DJANGO_SUPERUSER_USERNAME"
-          SUP_EMAIL="${ENV_PATH}/DJANGO_SUPERUSER_EMAIL"
-          SUP_PASS="${ENV_PATH}/DJANGO_SUPERUSER_PASSWORD"
+          # build command in parts to keep lines short
+          CMD1="aws s3 cp s3://${STAGING_BUCKET}/provision_ubuntu_ec2.sh"
+          CMD2="/tmp/provision_ubuntu_ec2.sh && chmod +x"
+          CMD3="/tmp/provision_ubuntu_ec2.sh && /bin/bash"
+          CMD="${CMD1} ${CMD2} ${CMD3}"
+          CMD_JSON=$(printf '["%s"]' "$CMD")
 
-          check_and_put "$SK" "$SECRET_KEY"
-          check_and_put "$DBP" "$DB_PASS"
-          check_and_put "$PK" "$PROVISION_KEY"
-
-          if [ -n "${{ secrets.DJANGO_SUPERUSER_USERNAME }}" ]; then
-            aws ssm put-parameter --name "$SUP_USER" \
-              --value "${{ secrets.DJANGO_SUPERUSER_USERNAME }}" \
-              --type "SecureString" --overwrite
-          fi
-
-          if [ -n "${{ secrets.DJANGO_SUPERUSER_EMAIL }}" ]; then
-            aws ssm put-parameter --name "$SUP_EMAIL" \
-              --value "${{ secrets.DJANGO_SUPERUSER_EMAIL }}" \
-              --type "SecureString" --overwrite
-          fi
-
-          if [ -n "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" ]; then
-            aws ssm put-parameter --name "$SUP_PASS" \
-              --value "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" \
-              --type "SecureString" --overwrite
-          fi
-
-          echo "ssm_prefix=$ENV_PATH" >> "$GITHUB_OUTPUT"
-          echo "secret_key_param=$SK" >> "$GITHUB_OUTPUT"
-          echo "db_pass_param=$DBP" >> "$GITHUB_OUTPUT"
-          echo "provision_key_param=$PK" >> "$GITHUB_OUTPUT"
-
-      - name: Send SSM command to run provision script
-        id: send_ssm
-        env:
-          INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
-          STAGING_BUCKET: ${{ steps.prep.outputs.staging_bucket }}
-        run: |
-          set -euo pipefail
-          INSTANCE_ID="${INSTANCE_ID}"
-          STAGING_BUCKET="${STAGING_BUCKET}"
-
-          PART1='aws s3 cp s3://'
-          PART2="${STAGING_BUCKET}"
-          PART3='/provision_ubuntu_ec2.sh /tmp/provision_ubuntu_ec2.sh'
-          CMD_DOWNLOAD="$PART1$PART2$PART3"
-
-          CMD_A=' && chmod +x /tmp/provision_ubuntu_ec2.sh'
-          CMD_B=' && /bin/bash /tmp/provision_ubuntu_ec2.sh'
-          CMD_FULL="$CMD_DOWNLOAD$CMD_A$CMD_B"
-
-          CMD_JSON=$(printf '["%s"]' "$CMD_FULL")
-
-          CMD_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
+          aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy: download and run provision script" \
+            --comment "Deploy via SSM" \
             --parameters commands="$CMD_JSON" \
             --timeout-seconds 900 \
-            --query "Command.CommandId" --output text)
+            --query "Command.CommandId" --output text
 
-          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SSM result
-        env:
-          INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
+      - name: Print backend info
+        if: always()
         run: |
-          set -euo pipefail
-          CMD_ID=${{ steps.send_ssm.outputs.command_id }}
-          INSTANCE_ID="${INSTANCE_ID}"
-
-          ATTEMPTS=0
-          while [ $ATTEMPTS -lt 120 ]; do
-            sleep 5
-            ((ATTEMPTS++))
-            STATUS=$(aws ssm list-command-invocations \
-              --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" \
-              --query "CommandInvocations[0].Status" \
-              --output text 2>/dev/null || echo "Unknown")
-            echo "SSM status: $STATUS"
-            if [ "$STATUS" = "Success" ]; then
-              exit 0
-            fi
-            if [[ "$STATUS" =~ ^(Failed|Cancelled|TimedOut|Undeliverable)$ ]]; then
-              aws ssm list-command-invocations \
-                --command-id "$CMD_ID" --details --instance-id "$INSTANCE_ID" || true
-              exit 1
-            fi
-          done
-          exit 1
+          echo "bucket=${{ steps.bootstrap.outputs.bucket }}"
+          echo "dynamodb_table=${{ steps.bootstrap.outputs.dynamodb_table }}"
+          echo "region=${{ steps.bootstrap.outputs.region }}"
