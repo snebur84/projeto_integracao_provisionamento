@@ -60,15 +60,9 @@ variable "environment" {
 locals {
   use_existing_profile = length(trimspace(var.existing_instance_profile)) > 0
 
-  # single-line ternary expression to avoid HCL parsing errors caused by
-  # multi-line ternary breaks. This computes the instance profile name:
-  # - existing profile (data source) when provided
-  # - otherwise the profile created by this module (if create_iam_role)
-  # - otherwise null
-  instance_profile_name = local.use_existing_profile ?
-    data.aws_iam_instance_profile.existing[0].name :
-    (var.create_instance && var.create_iam_role ?
-      aws_iam_instance_profile.ec2_profile[0].name : null)
+  # NOTE: put the full conditional expression in one line to avoid
+  # HCL parsing issues with multi-line ternaries inside locals.
+  instance_profile_name = local.use_existing_profile ? data.aws_iam_instance_profile.existing[0].name : (var.create_instance && var.create_iam_role ? aws_iam_instance_profile.ec2_profile[0].name : null)
 }
 
 # If user provided an existing profile name, read it; otherwise count=0.
