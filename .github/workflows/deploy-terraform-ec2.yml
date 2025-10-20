@@ -1,28 +1,5 @@
-# URL: https://github.com/snebur84/projeto_integracao_provisionamento/blob/main/.github/workflows/deploy-terraform-ec2.yml
-# GitHub Actions workflow:
-# - If an instance with the configured project/name tag already exists, skip Terraform and reuse it.
-# - Otherwise run Terraform to create infra and then deploy.
-# - After infra is ensured, upload the provision script to S3, ensure dynamic secrets in SSM and run the provision script via SSM.
-#
-# Required repository Secrets / Variables (create them in GitHub > Settings > Secrets and variables > Actions):
-# - AWS_ACCESS_KEY_ID (secret)
-# - AWS_SECRET_ACCESS_KEY (secret)
-# - AWS_REGION (variable or secret)
-# - DJANGO_SUPERUSER_USERNAME (secret)
-# - DJANGO_SUPERUSER_EMAIL (secret)
-# - DJANGO_SUPERUSER_PASSWORD (secret)
-# - PROVISION_API_KEY (secret) [optional — if you want to control it via GH Secrets]
-# - TF_VAR_public_key (optional secret) and other TF_VAR_* as required by infra/terraform
-# - S3_BUCKET (optional): if you already have a staging bucket and want to reuse it when skipping Terraform
-#
-# Inputs:
-# - environment: logical environment name (used as SSM prefix and tag filter)
-#
-# Notes:
-# - The check looks for EC2 instances by tag "Project" equal to the environment name. Adjust the tag/filter if your infra uses a different tag.
-# - If you prefer a different detection method (by Name tag, by tag value prefix or by explicit instance id), adjust the check_infra job's AWS CLI filters.
-# - If Terraform creates a staging bucket, its output "staging_bucket" will be used. If Terraform is skipped and you provided S3_BUCKET secret, that bucket is used instead.
-#
+# Workflow: Detect or create infra (Terraform) and deploy app via SSM
+# Manual trigger (workflow_dispatch) with `environment` input
 on:
   workflow_dispatch:
     inputs:
@@ -51,11 +28,9 @@ jobs:
         run: |
           set -euo pipefail
           ENV="${{ github.event.inputs.environment }}"
-          # you can change the tag key if your infra uses a different one (e.g. "Name")
           TAG_KEY="Project"
 
           echo "Looking for instances with tag ${TAG_KEY}=${ENV} (state running|pending|stopped|stopping)..."
-          # Query instances by tag and acceptable states
           INSTANCES=$(aws ec2 describe-instances \
             --filters "Name=tag:${TAG_KEY},Values=${ENV}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
             --query 'Reservations[].Instances[].InstanceId' --output text || true)
@@ -65,7 +40,6 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
             echo "instance_id=" >> "$GITHUB_OUTPUT"
           else
-            # pick the first instance id
             FIRST=$(echo "$INSTANCES" | awk '{print $1}')
             echo "Found instance: $FIRST"
             echo "found=true" >> "$GITHUB_OUTPUT"
@@ -73,7 +47,7 @@ jobs:
           fi
 
   terraform:
-    name: Terraform apply (create infra) — runs only if no infra found
+    name: Terraform apply (create infra) - runs only if no infra found
     runs-on: ubuntu-latest
     needs: check_infra
     if: needs.check_infra.outputs.found == 'false'
@@ -150,11 +124,9 @@ jobs:
         id: prep
         run: |
           set -euo pipefail
-          # Determine INSTANCE_ID: prefer check_infra found instance, otherwise use terraform output
           CHECK_FOUND="${{ needs.check_infra.outputs.found }}"
           CHECK_INSTANCE="${{ needs.check_infra.outputs.instance_id }}"
           TF_INSTANCE="${{ needs.terraform.outputs.instance_id }}"
-          # Determine STAGING_BUCKET: prefer terraform output if TF ran; else use provided S3_BUCKET secret if present
           TF_STAGING="${{ needs.terraform.outputs.staging_bucket }}"
           S3_BUCKET_OVERRIDE="${{ secrets.S3_BUCKET || '' }}"
 
@@ -205,11 +177,7 @@ jobs:
             fi
           }
 
-          SECRET_KEY=$(python - <<'PY'
-import secrets
-print(secrets.token_urlsafe(50))
-PY
-)
+          SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(50))")
           DB_PASS=$(openssl rand -base64 18)
           if [ -n "${{ secrets.PROVISION_API_KEY }}" ]; then
             PROVISION_KEY="${{ secrets.PROVISION_API_KEY }}"
@@ -238,6 +206,11 @@ PY
             aws ssm put-parameter --name "$SUP_PASS" --value "${{ secrets.DJANGO_SUPERUSER_PASSWORD }}" --type "SecureString" --overwrite
           fi
 
+          echo "ssm_prefix=$ENV_PATH" >> "$GITHUB_OUTPUT"
+          echo "secret_key_param=$SK" >> "$GITHUB_OUTPUT"
+          echo "db_pass_param=$DBP" >> "$GITHUB_OUTPUT"
+          echo "provision_key_param=$PK" >> "$GITHUB_OUTPUT"
+
       - name: Send SSM RunCommand to prepare .env and execute provision script
         id: send_ssm
         env:
@@ -259,7 +232,7 @@ get_ssm() {
   aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value --output text 2>/dev/null || echo ""
 }
 
-ENV_PATH="$ENV_PATH"
+ENV_PATH="__ENV_PATH_REPLACEME__"
 mkdir -p /home/provision
 chown provision:provision /home/provision || true
 
@@ -291,6 +264,9 @@ chmod +x /tmp/provision_ubuntu_ec2.sh
 EOF
 )
 
+          # Replace placeholder with actual ENV_PATH (safe substitution)
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//__ENV_PATH_REPLACEME__/$ENV_PATH}"
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
@@ -300,14 +276,14 @@ EOF
             --query "Command.CommandId" --output text)
 
           echo "Sent SSM command: $CMD_ID"
-          echo "::set-output name=command_id::$CMD_ID"
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for SSM command result
         env:
           INSTANCE_ID: ${{ steps.prep.outputs.instance_id }}
         run: |
           set -euo pipefail
-          CMD_ID=${{ steps.send_ssm.outputs.command_id || steps.send_ssm.outputs.command_id }}
+          CMD_ID=${{ steps.send_ssm.outputs.command_id }}
           INSTANCE_ID="${INSTANCE_ID}"
           echo "Polling SSM invocation status for command $CMD_ID on instance $INSTANCE_ID ..."
           ATTEMPTS=0
