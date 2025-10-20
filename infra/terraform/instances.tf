@@ -31,12 +31,6 @@ variable "subnet_id" {
   default     = ""
 }
 
-variable "name_prefix" {
-  description = "Prefix used for resource names"
-  type        = string
-  default     = "meuprojeto"
-}
-
 variable "existing_instance_profile" {
   description = "Name of an existing IAM instance profile to use (optional)"
   type        = string
@@ -53,6 +47,9 @@ data "aws_iam_instance_profile" "existing" {
   name  = var.existing_instance_profile
 }
 
+# Only create role/profile/attachments when creating instance AND not using
+# an existing profile. This avoids requiring iam:CreateRole permissions
+# when the runner/account can't create IAM resources.
 resource "aws_iam_role" "ec2_role" {
   count = (var.create_instance && !local.use_existing_profile) ? 1 : 0
 
@@ -95,9 +92,8 @@ resource "aws_instance" "provision" {
   key_name      = length(trimspace(var.key_name)) > 0 ? var.key_name : null
   subnet_id     = length(trimspace(var.subnet_id)) > 0 ? var.subnet_id : null
 
-  iam_instance_profile = local.use_existing_profile ?
-    data.aws_iam_instance_profile.existing[0].name :
-    (var.create_instance ? aws_iam_instance_profile.ec2_profile[0].name : null)
+  # Single-line nested conditional expression (valid Terraform syntax)
+  iam_instance_profile = local.use_existing_profile ? data.aws_iam_instance_profile.existing[0].name : (var.create_instance ? aws_iam_instance_profile.ec2_profile[0].name : null)
 
   vpc_security_group_ids = length(var.sg_ids) > 0 ? var.sg_ids : null
 
@@ -106,7 +102,7 @@ resource "aws_instance" "provision" {
   }
 }
 
-# Data source for Ubuntu AMI
+# Data source for Ubuntu AMI (kept at the end for readability)
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
