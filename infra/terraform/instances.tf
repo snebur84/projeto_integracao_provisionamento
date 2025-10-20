@@ -56,12 +56,9 @@ variable "environment" {
   default     = "prod"
 }
 
-# local flags and computed name
+# local flags and computed name (single-line expression to avoid parser issues)
 locals {
   use_existing_profile = length(trimspace(var.existing_instance_profile)) > 0
-
-  # NOTE: put the full conditional expression in one line to avoid
-  # HCL parsing issues with multi-line ternaries inside locals.
   instance_profile_name = local.use_existing_profile ? data.aws_iam_instance_profile.existing[0].name : (var.create_instance && var.create_iam_role ? aws_iam_instance_profile.ec2_profile[0].name : null)
 }
 
@@ -132,16 +129,19 @@ resource "aws_instance" "provision" {
 
   # user_data downloads the presigned URL (in var.presigned_url)
   # and executes the provisioning script on first boot.
+  # Important: use Terraform interpolation for the presigned URL here:
   user_data = <<-EOF
     #!/bin/bash
     set -euo pipefail
     PRESIGNED_URL="${var.presigned_url}"
+    ENVIRONMENT="$ENVIRONMENT"
+    # assign environment from Terraform value
     ENVIRONMENT="${var.environment}"
-    if [ -n "${PRESIGNED_URL}" ]; then
+    if [ -n "$PRESIGNED_URL" ]; then
       echo "Downloading provision script..."
-      curl -fsSL "${PRESIGNED_URL}" -o /tmp/provision.sh || exit 1
+      curl -fsSL "$PRESIGNED_URL" -o /tmp/provision.sh || exit 1
       chmod +x /tmp/provision.sh
-      /bin/bash /tmp/provision.sh "${ENVIRONMENT}"
+      /bin/bash /tmp/provision.sh "$ENVIRONMENT"
     else
       echo "No presigned URL provided; nothing to run."
     fi
