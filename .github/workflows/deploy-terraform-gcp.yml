@@ -15,7 +15,7 @@ on:
       script_path:
         description: "Path to provisioning script in repo"
         required: false
-        default: "scripts/provision_gcp.sh"
+        default: "scripts/provision_ubuntu_full.sh"
       presign_ttl:
         description: "Signed URL TTL in seconds"
         required: false
