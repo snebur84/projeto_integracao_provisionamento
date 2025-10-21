@@ -52,7 +52,7 @@ jobs:
           terraform_version: 1.5.7
 
       - name: Bootstrap - write variables file
-        working-directory: terraform/bootstrap/aws
+        working-directory: infra/terraform/bootstrap/aws
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -63,14 +63,14 @@ jobs:
           printf 'aws_region = "%s"\n' "$AWS_REGION" >> terraform.tfvars
 
       - name: Bootstrap - init and apply
-        working-directory: terraform/bootstrap/aws
+        working-directory: infra/terraform/bootstrap/aws
         run: |
           set -euo pipefail
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
       - name: Get bootstrap outputs - save JSON
-        working-directory: terraform/bootstrap/aws
+        working-directory: infra/terraform/bootstrap/aws
         id: bootstrap
         run: |
           set -euo pipefail
