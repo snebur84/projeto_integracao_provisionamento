@@ -10,11 +10,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: 1.5.7
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -23,10 +18,24 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Force unlock Terraform state
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Write backend.hcl (adjust placeholders)
+        run: |
+          mkdir -p infra/terraform/gcp
+          cat > infra/terraform/gcp/backend.hcl <<EOF
+          bucket = "${{ secrets.TF_STATE_BUCKET }}"        # ex: nome-do-bucket-s3
+          key    = "${{ secrets.TF_STATE_KEY }}"           # ex: prod/terraform.tfstate
+          region = "${{ secrets.AWS_REGION }}"
+          dynamodb_table = "${{ secrets.TF_DDB_TABLE }}"   # nome da tabela DynamoDB para locks
+          EOF
+
+      - name: Init & Force-unlock
+        working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          # Ajuste este caminho para onde seu backend/terraform root está no repositório
-          cd infra/terraform
-          terraform init -input=false
+          terraform init -backend-config=backend.hcl -input=false -reconfigure
           terraform force-unlock -force 483b6026-fb2a-97bb-82b8-7e771d06968c
