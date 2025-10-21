@@ -28,8 +28,8 @@ jobs:
 
       - name: Write backend.hcl
         run: |
-          mkdir -p infra/terraform/gcp
-          cat > infra/terraform/gcp/backend.hcl <<EOF
+          mkdir -p infra/terraform
+          cat > infra/terraform/backend.hcl <<EOF
           bucket         = "${{ secrets.TF_STATE_BUCKET }}"
           key            = "${{ secrets.TF_STATE_KEY }}"
           region         = "${{ secrets.AWS_REGION }}"
