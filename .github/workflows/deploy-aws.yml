@@ -71,12 +71,15 @@ jobs:
           if printf '%s' "$proj" | grep -qE '^[^a-z]'; then
             proj="p-${proj}"
           fi
+
           ts="$(date +%s%N)"
           rand="${RANDOM}"
           hash="$(printf '%s' "${REPO}-${RUN_ID}-${ts}-${rand}" \
             | sha256sum | cut -c1-8 | tr -dc 'a-z0-9')"
+
           bucket="${proj}-${hash}"
           ddb="${proj}-ddb-${hash}"
+
           max_len=63
           if [ "${#bucket}" -gt "$max_len" ]; then
             allow_proj_len=$((max_len - 1 - ${#hash}))
@@ -85,21 +88,25 @@ jobs:
             bucket="${proj_short}-${hash}"
             ddb="${proj_short}-ddb-${hash}"
           fi
+
           bucket="$(printf '%s' "$bucket" \
             | sed -E 's/^-+//; s/-+$//')"
           if printf '%s' "$bucket" \
             | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             bucket="p-${bucket}"
           fi
+
           if [ "${#ddb}" -lt 3 ]; then
             ddb="${ddb}01"
           fi
+
           printf 'state_bucket_name = "%s"\n' "$bucket" > \
             terraform.tfvars
           printf 'dynamodb_table_name = "%s"\n' "$ddb" >> \
             terraform.tfvars
           printf 'aws_region = "%s"\n' "${AWS_REGION:-us-east-1}" \
             >> terraform.tfvars
+
           echo "WROTE: state_bucket_name=${bucket}"
           echo "WROTE: dynamodb_table_name=${ddb}"
 
@@ -120,8 +127,20 @@ jobs:
       - name: Export bootstrap outputs as env
         run: |
           set -euo pipefail
-          TF_BUCKET=$(jq -r '.state_bucket.value' /tmp/bootstrap.json)
-          TF_DDB=$(jq -r '.dynamodb_table.value' /tmp/bootstrap.json)
+          if ! jq empty /tmp/bootstrap.json >/dev/null 2>&1; then
+            echo "ERROR: invalid or empty /tmp/bootstrap.json"
+            sed -n '1,200p' /tmp/bootstrap.json || true
+            exit 1
+          fi
+          TF_BUCKET=$(jq -r '.state_bucket.value // .bucket.value // empty' \
+            /tmp/bootstrap.json)
+          TF_DDB=$(jq -r '.dynamodb_table.value // .ddb.value // empty' \
+            /tmp/bootstrap.json)
+          if [ -z "$TF_BUCKET" ] || [ -z "$TF_DDB" ]; then
+            echo "ERROR: expected outputs not found; keys present:"
+            jq 'keys' /tmp/bootstrap.json || true
+            exit 1
+          fi
           printf 'TF_BUCKET=%s\n' "$TF_BUCKET" >> $GITHUB_ENV
           printf 'TF_DDB=%s\n' "$TF_DDB" >> $GITHUB_ENV
 
