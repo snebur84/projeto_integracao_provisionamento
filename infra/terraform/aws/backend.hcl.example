@@ -1,0 +1,9 @@
+# Example backend configuration for AWS S3
+# Copy this file to backend.hcl and fill in the values
+# DO NOT commit backend.hcl with real values to the repository
+
+bucket         = "your-terraform-state-bucket-name"
+key            = "prod/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "your-terraform-locks-table-name"
+encrypt        = true
