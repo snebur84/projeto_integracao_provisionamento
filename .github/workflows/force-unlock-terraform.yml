@@ -27,6 +27,6 @@ jobs:
         run: |
           set -euo pipefail
           # Ajuste este caminho para onde seu backend/terraform root está no repositório
-          cd infra/terraform/gcp || cd .
+          cd infra/terraform
           terraform init -input=false
           terraform force-unlock -force 483b6026-fb2a-97bb-82b8-7e771d06968c
