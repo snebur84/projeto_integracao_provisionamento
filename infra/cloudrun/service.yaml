@@ -1,0 +1,85 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: provision-app
+  labels:
+    cloud.googleapis.com/location: GCP_REGION_PLACEHOLDER
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/cloudsql-instances: CLOUD_SQL_CONNECTION_NAME_PLACEHOLDER
+    spec:
+      serviceAccountName: SERVICE_ACCOUNT_EMAIL_PLACEHOLDER
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+      - name: provision-app
+        image: IMAGE_PLACEHOLDER
+        ports:
+        - name: http1
+          containerPort: 8000
+        env:
+        - name: DJANGO_SETTINGS_MODULE
+          value: provision.settings
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: DJANGO_ALLOWED_HOSTS
+          value: DJANGO_ALLOWED_HOSTS_PLACEHOLDER
+        - name: DB_NAME
+          value: DB_NAME_PLACEHOLDER
+        - name: DB_USER
+          value: DB_USER_PLACEHOLDER
+        - name: DB_HOST
+          value: /cloudsql/CLOUD_SQL_CONNECTION_NAME_PLACEHOLDER
+        - name: DB_PORT
+          value: "3306"
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: mongo-uri
+              key: latest
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: django-secret-key
+              key: latest
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-password
+              key: latest
+        - name: PROVISION_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: provision-api-key
+              key: latest
+        - name: ENVIRONMENT
+          value: ENVIRONMENT_PLACEHOLDER
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: 1Gi
+        startupProbe:
+          httpGet:
+            path: /api/
+            port: 8000
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/
+            port: 8000
+          initialDelaySeconds: 0
+          timeoutSeconds: 5
+          periodSeconds: 30
+          failureThreshold: 3
