@@ -7,3 +7,12 @@ venv
 *.pyd
 deploy_old
 */*/*.old
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+backend.hcl
+tfplan

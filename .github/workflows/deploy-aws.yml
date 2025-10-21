@@ -1,0 +1,258 @@
+---
+# AWS Deployment Workflow
+# Creates backend infrastructure (S3 + DynamoDB) and deploys AWS resources via Terraform
+
+name: Deploy AWS Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment (e.g., prod, staging)"
+        required: true
+        default: "prod"
+      create_instance:
+        description: "Create EC2 instance (true/false)"
+        required: false
+        default: true
+        type: boolean
+      instance_type:
+        description: "EC2 instance type"
+        required: false
+        default: "t3.micro"
+      key_name:
+        description: "EC2 key pair name (optional)"
+        required: false
+        default: ""
+      subnet_id:
+        description: "Subnet ID (optional)"
+        required: false
+        default: ""
+      security_group_ids:
+        description: "Comma-separated security group IDs (optional)"
+        required: false
+        default: ""
+      script_path:
+        description: "Path to provisioning script in repo"
+        required: false
+        default: "scripts/provision_ubuntu_full.sh"
+      presign_ttl:
+        description: "Presigned URL TTL in seconds"
+        required: false
+        default: "86400"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      TERRAFORM_VERSION: "1.5.7"
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC or static)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          curl -fsSLo "${ZIP}" \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${ZIP}"
+          unzip -q "${ZIP}"
+          sudo mv terraform /usr/local/bin/terraform
+          sudo chmod +x /usr/local/bin/terraform
+          rm -f "${ZIP}"
+          terraform version
+
+      # Bootstrap: Create S3 + DynamoDB for state backend
+      - name: Bootstrap backend (S3 + DynamoDB)
+        id: bootstrap
+        working-directory: infra/terraform/bootstrap/aws
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          REGION="${AWS_REGION}"
+          
+          # Generate unique bucket and table names
+          BUCKET="terraform-state-${ENV}-$(echo $GITHUB_REPOSITORY | sed 's/\//-/g')"
+          TABLE="${BUCKET}-locks"
+          
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "dynamodb_table=${TABLE}" >> "$GITHUB_OUTPUT"
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
+          
+          # Initialize Terraform for bootstrap (no backend)
+          terraform init
+          
+          # Apply bootstrap configuration
+          terraform apply -auto-approve \
+            -var="region=${REGION}" \
+            -var="state_bucket_name=${BUCKET}" \
+            -var="dynamodb_table_name=${TABLE}" \
+            -var="environment=${ENV}"
+          
+          # Extract outputs
+          BUCKET_OUT=$(terraform output -raw state_bucket)
+          TABLE_OUT=$(terraform output -raw dynamodb_table)
+          
+          echo "Created backend: bucket=${BUCKET_OUT}, table=${TABLE_OUT}"
+
+      - name: Validate bootstrap outputs
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          TABLE="${{ steps.bootstrap.outputs.dynamodb_table }}"
+          
+          if [ -z "$BUCKET" ] || [ -z "$TABLE" ]; then
+            echo "ERROR: Bootstrap failed - bucket or table name is empty"
+            exit 1
+          fi
+          
+          echo "Bootstrap validation passed"
+          echo "Bucket: $BUCKET"
+          echo "Table: $TABLE"
+
+      - name: Upload provision script and create presigned URL
+        id: presign
+        if: github.event.inputs.script_path != ''
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          SCRIPT="${{ github.event.inputs.script_path }}"
+          DEST="provision-$(date +%s).sh"
+          
+          if [ -f "$SCRIPT" ]; then
+            aws s3 cp "${SCRIPT}" \
+              "s3://${BUCKET}/${DEST}" --acl private
+            
+            TTL="${{ github.event.inputs.presign_ttl }}"
+            PRESIGNED=$(aws s3 presign \
+              "s3://${BUCKET}/${DEST}" --expires-in "${TTL}")
+            
+            echo "presigned_url=${PRESIGNED}" >> "$GITHUB_OUTPUT"
+            echo "Uploaded script and created presigned URL"
+          else
+            echo "Script not found: ${SCRIPT}"
+            echo "presigned_url=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create backend configuration for main deployment
+        working-directory: infra/terraform/aws
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          TABLE="${{ steps.bootstrap.outputs.dynamodb_table }}"
+          REGION="${{ steps.bootstrap.outputs.region }}"
+          ENV="${{ github.event.inputs.environment }}"
+          
+          cat > backend.hcl <<EOF
+          bucket         = "${BUCKET}"
+          key            = "${ENV}/terraform.tfstate"
+          region         = "${REGION}"
+          dynamodb_table = "${TABLE}"
+          encrypt        = true
+          EOF
+          
+          echo "Created backend.hcl for main deployment"
+          cat backend.hcl
+
+      - name: Terraform init and validate (main deployment)
+        working-directory: infra/terraform/aws
+        run: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl -reconfigure
+          terraform validate
+
+      - name: Terraform plan
+        working-directory: infra/terraform/aws
+        env:
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type }}
+          TF_VAR_key_name: ${{ github.event.inputs.key_name }}
+          TF_VAR_subnet_id: ${{ github.event.inputs.subnet_id }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_environment: ${{ github.event.inputs.environment }}
+        run: |
+          set -euo pipefail
+          
+          # Parse security group IDs
+          SG_INPUT="${{ github.event.inputs.security_group_ids }}"
+          if [ -n "${SG_INPUT}" ]; then
+            IFS=',' read -ra SG_ARRAY <<<"${SG_INPUT}"
+            SG_JSON="["
+            first=true
+            for sg in "${SG_ARRAY[@]}"; do
+              sg_trimmed=$(echo "$sg" | xargs)
+              if [ -n "$sg_trimmed" ]; then
+                [ "$first" = false ] && SG_JSON="${SG_JSON},"
+                SG_JSON="${SG_JSON}\"${sg_trimmed}\""
+                first=false
+              fi
+            done
+            SG_JSON="${SG_JSON}]"
+          else
+            SG_JSON='[]'
+          fi
+          
+          export TF_VAR_sg_ids="${SG_JSON}"
+          terraform plan -out=tfplan -input=false
+
+      - name: Terraform apply
+        working-directory: infra/terraform/aws
+        env:
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type }}
+          TF_VAR_key_name: ${{ github.event.inputs.key_name }}
+          TF_VAR_subnet_id: ${{ github.event.inputs.subnet_id }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+          TF_VAR_environment: ${{ github.event.inputs.environment }}
+        run: |
+          set -euo pipefail
+          
+          # Parse security group IDs (same as plan)
+          SG_INPUT="${{ github.event.inputs.security_group_ids }}"
+          if [ -n "${SG_INPUT}" ]; then
+            IFS=',' read -ra SG_ARRAY <<<"${SG_INPUT}"
+            SG_JSON="["
+            first=true
+            for sg in "${SG_ARRAY[@]}"; do
+              sg_trimmed=$(echo "$sg" | xargs)
+              if [ -n "$sg_trimmed" ]; then
+                [ "$first" = false ] && SG_JSON="${SG_JSON},"
+                SG_JSON="${SG_JSON}\"${sg_trimmed}\""
+                first=false
+              fi
+            done
+            SG_JSON="${SG_JSON}]"
+          else
+            SG_JSON='[]'
+          fi
+          
+          export TF_VAR_sg_ids="${SG_JSON}"
+          terraform apply -input=false -auto-approve tfplan
+
+      - name: Output deployment results
+        working-directory: infra/terraform/aws
+        run: |
+          set -euo pipefail
+          echo "=== Deployment Outputs ==="
+          terraform output -json | jq '.'
+          
+          echo ""
+          echo "=== Backend Configuration ==="
+          echo "Bucket: ${{ steps.bootstrap.outputs.bucket }}"
+          echo "DynamoDB Table: ${{ steps.bootstrap.outputs.dynamodb_table }}"
+          echo "Region: ${{ steps.bootstrap.outputs.region }}"

@@ -1,0 +1,216 @@
+---
+# GCP Deployment Workflow
+# Creates backend infrastructure (GCS bucket) and deploys GCP resources via Terraform
+
+name: Deploy GCP Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment (e.g., prod, staging)"
+        required: true
+        default: "prod"
+      create_instance:
+        description: "Create compute instance (true/false)"
+        required: false
+        default: true
+        type: boolean
+      machine_type:
+        description: "GCP machine type (e.g., e2-micro)"
+        required: false
+        default: "e2-micro"
+      script_path:
+        description: "Path to provisioning script in repo"
+        required: false
+        default: "scripts/provision_ubuntu_full.sh"
+      presign_ttl:
+        description: "Signed URL TTL in seconds"
+        required: false
+        default: "86400"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+      GCP_REGION: ${{ secrets.GCP_REGION || 'us-central1' }}
+      GCP_ZONE: ${{ secrets.GCP_ZONE || 'us-central1-a' }}
+      TERRAFORM_VERSION: "1.5.7"
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Authenticate using Workload Identity Federation (preferred) or service account key
+      - name: Authenticate to GCP
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT }}
+
+      - name: Verify GCP authentication
+        run: |
+          set -euo pipefail
+          echo "=== GCP Authentication Info ==="
+          gcloud auth list
+          gcloud config list
+          echo "Project: ${GCP_PROJECT}"
+          echo "Region: ${GCP_REGION}"
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          curl -fsSLo "${ZIP}" \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${ZIP}"
+          unzip -q "${ZIP}"
+          sudo mv terraform /usr/local/bin/terraform
+          sudo chmod +x /usr/local/bin/terraform
+          rm -f "${ZIP}"
+          terraform version
+
+      # Bootstrap: Create GCS bucket for state backend
+      - name: Bootstrap backend (GCS bucket)
+        id: bootstrap
+        working-directory: infra/terraform/bootstrap/gcp
+        run: |
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          REGION="${GCP_REGION}"
+          
+          # Generate unique bucket name (GCS bucket names are globally unique)
+          BUCKET="terraform-state-${ENV}-gcp-$(echo $GITHUB_REPOSITORY | sed 's/\//-/g' | tr '[:upper:]' '[:lower:]')"
+          
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
+          
+          # Initialize Terraform for bootstrap (no backend)
+          terraform init
+          
+          # Apply bootstrap configuration
+          terraform apply -auto-approve \
+            -var="project=${GCP_PROJECT}" \
+            -var="region=${REGION}" \
+            -var="state_bucket_name=${BUCKET}" \
+            -var="environment=${ENV}"
+          
+          # Extract outputs
+          BUCKET_OUT=$(terraform output -raw state_bucket)
+          
+          echo "Created backend bucket: ${BUCKET_OUT}"
+
+      - name: Validate bootstrap outputs
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          
+          if [ -z "$BUCKET" ]; then
+            echo "ERROR: Bootstrap failed - bucket name is empty"
+            exit 1
+          fi
+          
+          echo "Bootstrap validation passed"
+          echo "Bucket: $BUCKET"
+
+      - name: Upload provision script and create signed URL
+        id: presign
+        if: github.event.inputs.script_path != ''
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          SCRIPT="${{ github.event.inputs.script_path }}"
+          DEST="provision-$(date +%s).sh"
+          
+          if [ -f "$SCRIPT" ]; then
+            gsutil cp "${SCRIPT}" "gs://${BUCKET}/${DEST}"
+            
+            # Create signed URL using service account
+            TTL="${{ github.event.inputs.presign_ttl }}"
+            CREDS="${{ steps.auth.outputs.credentials_file_path }}"
+            
+            if [ -n "$CREDS" ] && [ -f "$CREDS" ]; then
+              SIGNED_URL=$(gsutil signurl -d "${TTL}s" \
+                "${CREDS}" "gs://${BUCKET}/${DEST}" | \
+                tail -n 1 | awk '{print $NF}')
+              echo "presigned_url=${SIGNED_URL}" >> "$GITHUB_OUTPUT"
+              echo "Created signed URL for provision script"
+            else
+              echo "WARNING: No credentials file for signing, skipping presigned URL"
+              echo "presigned_url=" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Script not found: ${SCRIPT}"
+            echo "presigned_url=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create backend configuration for main deployment
+        working-directory: infra/terraform/gcp
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.bootstrap.outputs.bucket }}"
+          ENV="${{ github.event.inputs.environment }}"
+          
+          cat > backend.hcl <<EOF
+          bucket  = "${BUCKET}"
+          prefix  = "${ENV}/terraform.tfstate"
+          EOF
+          
+          echo "Created backend.hcl for main deployment"
+          cat backend.hcl
+
+      - name: Terraform init and validate (main deployment)
+        working-directory: infra/terraform/gcp
+        run: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl -reconfigure
+          terraform validate
+
+      - name: Terraform plan
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_gcp_project: ${{ secrets.GCP_PROJECT }}
+          TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
+          TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_machine_type: ${{ github.event.inputs.machine_type }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+        run: |
+          set -euo pipefail
+          terraform plan -out=tfplan -input=false
+
+      - name: Terraform apply
+        working-directory: infra/terraform/gcp
+        env:
+          TF_VAR_gcp_project: ${{ secrets.GCP_PROJECT }}
+          TF_VAR_gcp_region: ${{ secrets.GCP_REGION }}
+          TF_VAR_gcp_zone: ${{ secrets.GCP_ZONE }}
+          TF_VAR_create_instance: ${{ github.event.inputs.create_instance }}
+          TF_VAR_machine_type: ${{ github.event.inputs.machine_type }}
+          TF_VAR_presigned_url: ${{ steps.presign.outputs.presigned_url }}
+        run: |
+          set -euo pipefail
+          terraform apply -input=false -auto-approve tfplan
+
+      - name: Output deployment results
+        working-directory: infra/terraform/gcp
+        run: |
+          set -euo pipefail
+          echo "=== Deployment Outputs ==="
+          terraform output -json | jq '.' || terraform output
+          
+          echo ""
+          echo "=== Backend Configuration ==="
+          echo "Bucket: ${{ steps.bootstrap.outputs.bucket }}"
+          echo "Region: ${{ steps.bootstrap.outputs.region }}"
