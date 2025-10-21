@@ -12,10 +12,16 @@ on:
 env:
   DOCKER_BUILDKIT: 1
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC authentication
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     
@@ -90,6 +96,9 @@ jobs:
   deploy-ecs:
     name: Deploy to AWS ECS Fargate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC authentication
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/full-infra-deploy-ecs-fargate-cloudrun'
     
@@ -124,6 +133,9 @@ jobs:
   deploy-cloudrun:
     name: Deploy to Google Cloud Run
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC authentication
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/full-infra-deploy-ecs-fargate-cloudrun'
     
