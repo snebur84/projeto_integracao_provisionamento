@@ -38,7 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials - session token included
+      - name: Configure AWS credentials - session token
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -51,16 +51,57 @@ jobs:
         with:
           terraform_version: 1.5.7
 
-      - name: Bootstrap - write variables file
+      - name: Bootstrap - write tfvars (auto names)
         working-directory: infra/terraform/bootstrap/aws
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          env="${ENV_NAME:-prod}"
-          printf 'environment = "%s"\n' "$env" > terraform.tfvars
-          printf 'aws_region = "%s"\n' "$AWS_REGION" >> terraform.tfvars
+          repo_name="${REPO##*/}"
+          proj="$(printf '%s' "$repo_name" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9-]+/-/g' \
+            | sed -E 's/^-+//; s/-+$//')"
+          if [ -z "$proj" ]; then
+            proj="project"
+          fi
+          if printf '%s' "$proj" | grep -qE '^[^a-z]'; then
+            proj="p-${proj}"
+          fi
+          ts="$(date +%s%N)"
+          rand="${RANDOM}"
+          hash="$(printf '%s' "${REPO}-${RUN_ID}-${ts}-${rand}" \
+            | sha256sum | cut -c1-8 | tr -dc 'a-z0-9')"
+          bucket="${proj}-${hash}"
+          ddb="${proj}-ddb-${hash}"
+          max_len=63
+          if [ "${#bucket}" -gt "$max_len" ]; then
+            allow_proj_len=$((max_len - 1 - ${#hash}))
+            proj_short="$(printf '%s' "$proj" \
+              | cut -c1-"$allow_proj_len")"
+            bucket="${proj_short}-${hash}"
+            ddb="${proj_short}-ddb-${hash}"
+          fi
+          bucket="$(printf '%s' "$bucket" \
+            | sed -E 's/^-+//; s/-+$//')"
+          if printf '%s' "$bucket" \
+            | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            bucket="p-${bucket}"
+          fi
+          if [ "${#ddb}" -lt 3 ]; then
+            ddb="${ddb}01"
+          fi
+          printf 'state_bucket_name = "%s"\n' "$bucket" > \
+            terraform.tfvars
+          printf 'dynamodb_table_name = "%s"\n' "$ddb" >> \
+            terraform.tfvars
+          printf 'aws_region = "%s"\n' "${AWS_REGION:-us-east-1}" \
+            >> terraform.tfvars
+          echo "WROTE: state_bucket_name=${bucket}"
+          echo "WROTE: dynamodb_table_name=${ddb}"
 
       - name: Bootstrap - init and apply
         working-directory: infra/terraform/bootstrap/aws
@@ -76,55 +117,36 @@ jobs:
           set -euo pipefail
           terraform output -json > /tmp/bootstrap.json
 
-      - name: Export bootstrap outputs as env vars
+      - name: Export bootstrap outputs as env
         run: |
           set -euo pipefail
           TF_BUCKET=$(jq -r '.state_bucket.value' /tmp/bootstrap.json)
           TF_DDB=$(jq -r '.dynamodb_table.value' /tmp/bootstrap.json)
           printf 'TF_BUCKET=%s\n' "$TF_BUCKET" >> $GITHUB_ENV
           printf 'TF_DDB=%s\n' "$TF_DDB" >> $GITHUB_ENV
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ENV_NAME: ${{ github.event.inputs.environment }}
 
-      - name: Bootstrap - write variables file
-        working-directory: infra/terraform/bootstrap/aws
+      - name: Write backend.hcl for AWS infra (no heredoc)
         env:
-          ENV_NAME: ${{ github.event.inputs.environment }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          TF_STATE_BUCKET_NAME: ${{ secrets.TF_STATE_BUCKET_NAME }}
-          TF_DDB_TABLE_NAME: ${{ secrets.TF_DDB_TABLE_NAME }}
+          ENV_NAME: ${{ github.event.inputs.environment }}
         run: |
           set -euo pipefail
+          mkdir -p infra/terraform/aws
           env="${ENV_NAME:-prod}"
-          region="${AWS_REGION:-us-east-1}"
-
-          # generate bucket/table names if not provided in secrets
-          if [ -n "${TF_STATE_BUCKET_NAME:-}" ]; then
-            bucket="${TF_STATE_BUCKET_NAME}"
-          else
-            shortrepo="${GITHUB_REPOSITORY//\//-}"
-            bucket="tfstate-${shortrepo}-${env}-${GITHUB_RUN_ID}"
-          fi
-
-          if [ -n "${TF_DDB_TABLE_NAME:-}" ]; then
-            ddb="${TF_DDB_TABLE_NAME}"
-          else
-            shortrepo="${GITHUB_REPOSITORY//\//-}"
-            ddb="tf-locks-${shortrepo}-${env}"
-          fi
-
-          printf 'state_bucket_name = "%s"\n' "$bucket" > terraform.tfvars
-          printf 'dynamodb_table_name = "%s"\n' "$ddb" >> terraform.tfvars
-          printf 'aws_region = "%s"\n' "$region" >> terraform.tfvars
-
-          echo "Wrote terraform.tfvars with state bucket and ddb table names."
+          KEY_PATH="env/${env}/terraform.tfstate"
+          OUT=infra/terraform/aws/backend.hcl
+          printf 'bucket         = "%s"\n' "$TF_BUCKET" > "$OUT"
+          printf 'key            = "%s"\n' "$KEY_PATH" >> "$OUT"
+          printf 'region         = "%s"\n' "$AWS_REGION" >> "$OUT"
+          printf 'dynamodb_table = "%s"\n' "$TF_DDB" >> "$OUT"
+          sed -n '1,120p' "$OUT"
 
       - name: Terraform init (aws infra)
         working-directory: infra/terraform/aws
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          terraform init -backend-config=backend.hcl -reconfigure \
+            -input=false
 
       - name: Terraform apply (aws infra)
         working-directory: infra/terraform/aws
