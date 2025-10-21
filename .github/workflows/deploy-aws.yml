@@ -87,24 +87,38 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           ENV_NAME: ${{ github.event.inputs.environment }}
 
-      - name: Write backend.hcl for AWS infra - no heredoc
+      - name: Bootstrap - write variables file
+        working-directory: infra/terraform/bootstrap/aws
         env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
           ENV_NAME: ${{ github.event.inputs.environment }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          TF_STATE_BUCKET_NAME: ${{ secrets.TF_STATE_BUCKET_NAME }}
+          TF_DDB_TABLE_NAME: ${{ secrets.TF_DDB_TABLE_NAME }}
         run: |
           set -euo pipefail
-          mkdir -p infra/terraform/aws
           env="${ENV_NAME:-prod}"
-          printf 'bucket         = "%s"\n' "$TF_BUCKET" \
-            > infra/terraform/aws/backend.hcl
-          printf 'key            = "%s"\n' \
-            "env/${env}/terraform.tfstate" \
-            >> infra/terraform/aws/backend.hcl
-          printf 'region         = "%s"\n' "$AWS_REGION" \
-            >> infra/terraform/aws/backend.hcl
-          printf 'dynamodb_table = "%s"\n' "$TF_DDB" \
-            >> infra/terraform/aws/backend.hcl
-          sed -n '1,120p' infra/terraform/aws/backend.hcl
+          region="${AWS_REGION:-us-east-1}"
+
+          # generate bucket/table names if not provided in secrets
+          if [ -n "${TF_STATE_BUCKET_NAME:-}" ]; then
+            bucket="${TF_STATE_BUCKET_NAME}"
+          else
+            shortrepo="${GITHUB_REPOSITORY//\//-}"
+            bucket="tfstate-${shortrepo}-${env}-${GITHUB_RUN_ID}"
+          fi
+
+          if [ -n "${TF_DDB_TABLE_NAME:-}" ]; then
+            ddb="${TF_DDB_TABLE_NAME}"
+          else
+            shortrepo="${GITHUB_REPOSITORY//\//-}"
+            ddb="tf-locks-${shortrepo}-${env}"
+          fi
+
+          printf 'state_bucket_name = "%s"\n' "$bucket" > terraform.tfvars
+          printf 'dynamodb_table_name = "%s"\n' "$ddb" >> terraform.tfvars
+          printf 'aws_region = "%s"\n' "$region" >> terraform.tfvars
+
+          echo "Wrote terraform.tfvars with state bucket and ddb table names."
 
       - name: Terraform init (aws infra)
         working-directory: infra/terraform/aws
