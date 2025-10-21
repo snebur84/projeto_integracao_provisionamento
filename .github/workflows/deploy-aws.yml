@@ -112,32 +112,51 @@ jobs:
         id: bootstrap
         run: |
           set -euo pipefail
-          # capture stdout/stderr for debugging
           terraform output -json > /tmp/bootstrap.raw 2> /tmp/bootstrap.err || true
 
-          # show stderr if present
           if [ -s /tmp/bootstrap.err ]; then
             echo "NOTE: terraform wrote to stderr:"
             sed -n '1,200p' /tmp/bootstrap.err || true
           fi
 
-          # strip any leading non-JSON lines: keep from first '{' onward
-          awk 'BEGIN{p=0} /{/ && !p{p=1} p{print}' /tmp/bootstrap.raw \
-            > /tmp/bootstrap.clean || true
+          # extract the first balanced JSON object from raw output using Python
+          python - <<'PY' > /tmp/bootstrap.json 2> /tmp/bootstrap.py.err || true
+          import sys, json
+          s=open('/tmp/bootstrap.raw','r',errors='replace').read()
+          i=s.find('{')
+          if i==-1:
+              sys.stderr.write('no JSON object start found\n'); sys.exit(2)
+          depth=0
+          end=-1
+          for idx,ch in enumerate(s[i:], start=i):
+              if ch=='{': depth+=1
+              elif ch=='}': depth-=1
+              if depth==0:
+                  end=idx
+                  break
+          if end==-1:
+              sys.stderr.write('no matching closing brace found\n'); sys.exit(3)
+          js=s[i:end+1]
+          try:
+              obj=json.loads(js)
+          except Exception as e:
+              sys.stderr.write('json loads failed: %s\n' % e)
+              sys.exit(4)
+          sys.stdout.write(json.dumps(obj))
+          PY
 
-          # validate cleaned JSON with jq and write pretty JSON
-          if jq '.' /tmp/bootstrap.clean > /tmp/bootstrap.json 2> /tmp/jq.err; then
-            echo "Valid JSON saved to /tmp/bootstrap.json"
-          else
-            echo "ERROR: 'jq' failed to parse terraform output."
+          if [ -s /tmp/bootstrap.py.err ]; then
+            echo "ERROR: python extraction failed:"
+            sed -n '1,200p' /tmp/bootstrap.py.err || true
             echo "--- raw terraform output ---"
             sed -n '1,200p' /tmp/bootstrap.raw || true
-            echo "--- terraform stderr ---"
-            sed -n '1,200p' /tmp/bootstrap.err || true
-            echo "--- cleaned text given to jq ---"
-            sed -n '1,200p' /tmp/bootstrap.clean || true
-            echo "--- jq error ---"
-            sed -n '1,200p' /tmp/jq.err || true
+            exit 1
+          fi
+
+          if ! jq '.' /tmp/bootstrap.json >/dev/null 2>&1; then
+            echo "ERROR: jq cannot parse /tmp/bootstrap.json"
+            echo "--- cleaned text ---"
+            sed -n '1,200p' /tmp/bootstrap.json || true
             exit 1
           fi
 
@@ -146,12 +165,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -s /tmp/bootstrap.json ]; then
-            echo "ERROR: /tmp/bootstrap.json missing or empty"
-            ls -l /tmp || true
+            echo "ERROR: /tmp/bootstrap.json missing or empty"; ls -l /tmp || true
             exit 1
           fi
 
-          # tolerant extraction: try several likely keys
           TF_BUCKET=$(jq -r '
             .state_bucket.value // .state_bucket_name.value //
             .bucket.value // empty' /tmp/bootstrap.json)
@@ -163,7 +180,6 @@ jobs:
           if [ -z "$TF_BUCKET" ] || [ -z "$TF_DDB" ]; then
             echo "ERROR: expected outputs not found; keys present:"
             jq 'keys' /tmp/bootstrap.json || true
-            echo "Full JSON:"
             sed -n '1,200p' /tmp/bootstrap.json || true
             exit 1
           fi
