@@ -1,0 +1,92 @@
+---
+name: Deploy to Render with Terraform
+
+# Apenas execução manual: remova gatilhos automáticos (push) e mantenha workflow_dispatch.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-render
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      # Provider Render também aceita a API key via variável de ambiente RENDER_API_KEY.
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Terraform Init
+        working-directory: infra/terraform/render
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: infra/terraform/render
+        run: terraform validate || true
+
+      - name: Terraform Plan (passando secrets como TF_VAR_*)
+        working-directory: infra/terraform/render
+        env:
+          TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_django_secret_key: ${{ secrets.DJANGO_SECRET_KEY }}
+          TF_VAR_django_debug: ${{ secrets.DJANGO_DEBUG }}
+          TF_VAR_django_allowed_hosts: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          TF_VAR_django_superuser_username: ${{ secrets.DJANGO_SUPERUSER_USERNAME }}
+          TF_VAR_django_superuser_email: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+          TF_VAR_django_superuser_password: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
+          TF_VAR_mysql_database: ${{ secrets.MYSQL_DATABASE }}
+          TF_VAR_mysql_user: ${{ secrets.MYSQL_USER }}
+          TF_VAR_mysql_password: ${{ secrets.MYSQL_PASSWORD }}
+          TF_VAR_mysql_root_password: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+          TF_VAR_mysql_port: ${{ secrets.MYSQL_PORT }}
+          TF_VAR_mongodb_root_username: ${{ secrets.MONGODB_ROOT_USERNAME }}
+          TF_VAR_mongodb_root_password: ${{ secrets.MONGODB_ROOT_PASSWORD }}
+          TF_VAR_mongodb_database: ${{ secrets.MONGODB_DATABASE }}
+          TF_VAR_provision_api_key: ${{ secrets.PROVISION_API_KEY }}
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: infra/terraform/render
+        env:
+          TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_django_secret_key: ${{ secrets.DJANGO_SECRET_KEY }}
+          TF_VAR_django_debug: ${{ secrets.DJANGO_DEBUG }}
+          TF_VAR_django_allowed_hosts: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          TF_VAR_django_superuser_username: ${{ secrets.DJANGO_SUPERUSER_USERNAME }}
+          TF_VAR_django_superuser_email: ${{ secrets.DJANGO_SUPERUSER_EMAIL }}
+          TF_VAR_django_superuser_password: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
+          TF_VAR_mysql_database: ${{ secrets.MYSQL_DATABASE }}
+          TF_VAR_mysql_user: ${{ secrets.MYSQL_USER }}
+          TF_VAR_mysql_password: ${{ secrets.MYSQL_PASSWORD }}
+          TF_VAR_mysql_root_password: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+          TF_VAR_mysql_port: ${{ secrets.MYSQL_PORT }}
+          TF_VAR_mongodb_root_username: ${{ secrets.MONGODB_ROOT_USERNAME }}
+          TF_VAR_mongodb_root_password: ${{ secrets.MONGODB_ROOT_PASSWORD }}
+          TF_VAR_mongodb_database: ${{ secrets.MONGODB_DATABASE }}
+          TF_VAR_provision_api_key: ${{ secrets.PROVISION_API_KEY }}
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Terraform Output (JSON)
+        if: always()
+        working-directory: infra/terraform/render
+        env:
+          TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+        run: terraform output -json > tf-output.json
+
+      - name: Show outputs for debugging
+        if: always()
+        working-directory: infra/terraform/render
+        run: |
+          cat tf-output.json || true

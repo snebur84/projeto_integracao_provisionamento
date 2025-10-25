@@ -1,0 +1,30 @@
+# Exemplo de terraform.tfvars (NÃO COMITAR valores reais)
+render_api_key = "r_<your_render_api_key_here>"
+
+# Django
+django_secret_key = "<random_django_secret_here>"
+django_debug = "0"
+django_allowed_hosts = "your-app.onrender.com"
+django_superuser_username = "admin"
+django_superuser_email = "admin@example.com"
+django_superuser_password = "<superuser_password>"
+
+# MySQL
+mysql_root_password = "<mysql_root_password>"
+mysql_database      = "provision_db"
+mysql_user          = "provision_user"
+mysql_password      = "<mysql_app_password>"
+mysql_port          = "3306"
+
+# Mongo
+mongodb_root_username = "mongo_root"
+mongodb_root_password = "<mongo_root_password>"
+mongodb_database      = "provision_mongo"
+mongodb_port          = "27017"
+
+# App repo/branch
+app_repo   = "snebur84/projeto_integracao_provisionamento"
+app_branch = "main"
+
+# Provision API key (optional)
+provision_api_key = ""
