@@ -30,12 +30,6 @@ variable "mysql_plan" {
   default     = "starter"
 }
 
-variable "mongodb_plan" {
-  type        = string
-  description = "Plan for MongoDB private service (adjust to available plans)"
-  default     = "starter"
-}
-
 variable "app_plan" {
   type        = string
   description = "Plan for the web service (adjust to available plans)"
