@@ -1,29 +1,34 @@
-# Outputs to consume after apply (terraform output -json)
+output "project_id" {
+  value       = try(render_project.project.id, "")
+  description = "Render project id (if created)"
+}
+
 output "mysql_service_id" {
-  value = render_service.mysql.id
+  value       = try(render_private_service.mysql.id, "")
+  description = "ID of the MySQL private service"
 }
 
 output "mysql_internal_hostname" {
-  # provider attribute name might differ (internal_hostname, internal_host, hostname_internal)
-  value = try(render_service.mysql.internal_hostname, "")
-  description = "Internal hostname for the MySQL service (use as MYSQL_HOST)"
+  value       = try(render_private_service.mysql.internal_hostname, "")
+  description = "Internal hostname for MySQL (may be empty if attribute name differs)"
 }
 
 output "mongo_service_id" {
-  value = render_service.mongo.id
+  value       = try(render_private_service.mongo.id, "")
+  description = "ID of the Mongo private service"
 }
 
 output "mongodb_internal_hostname" {
-  value = try(render_service.mongo.internal_hostname, "")
-  description = "Internal hostname for the MongoDB service (use as MONGODB_HOST)"
+  value       = try(render_private_service.mongo.internal_hostname, "")
+  description = "Internal hostname for MongoDB (may be empty if attribute name differs)"
 }
 
 output "app_service_id" {
-  value = render_service.app.id
+  value       = try(render_web_service.app.id, "")
+  description = "ID of the web service"
 }
 
-output "app_service_url" {
-  # Many providers expose a 'default' or 'url' attribute for public service endpoint
-  value = try(render_service.app.url, render_service.app.default_domain, "")
-  description = "Public URL of the Django app service (empty until domain assigned)"
+output "app_public_domain" {
+  value       = try(render_web_service.app.default_domain, try(render_web_service.app.url, ""))
+  description = "Public domain or url of the web service (may be empty until domain assigned)"
 }

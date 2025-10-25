@@ -1,25 +1,31 @@
 /*
-  Main Terraform resources for Render:
-  - render_service.mysql (container mysql:8)
-  - render_service.mongo (container mongo:6)
-  - render_service.app (Django app built from this repo)
+Terraform resources adapted to use provider render-oss/render resource types
+(discovered available resource types: render_project, render_private_service, render_web_service, etc.).
 
-  Atenção: os atributos exatos de render_service podem variar entre versões do provider.
-  Se o provider exigir blocos/nomes diferentes (ex.: docker_image, repository, build,
-  persistent_disk), ajuste conforme a documentação do provider Render que você estiver usando.
+Notas importantes:
+- Os nomes exatos de atributos (por exemplo persistent_disk, internal_hostname, default_domain, url)
+  podem variar entre versões do provider. Se terraform plan reclamar de um campo desconhecido,
+  cole o erro aqui que eu ajusto o bloco conforme a versão instalada.
+- Escapei a interpolação de shell ($${PORT:-8000}) para que o Terraform não tente interpretar.
 */
 
+# Optional project to group services
+resource "render_project" "project" {
+  name = var.project_name
+}
+
 # -------------------------
-# MySQL service (container)
+# MySQL private service (container)
 # -------------------------
-resource "render_service" "mysql" {
-  name         = var.mysql_service_name
-  # Tipo: se o provider usa 'service_type' ou 'type' ajuste aqui.
-  # service_type = "service"
-  # Image pública Docker (mysql)
+resource "render_private_service" "mysql" {
+  name    = var.mysql_service_name
+  # Associa ao projeto se o provider aceita project_id
+  project = try(render_project.project.id, null)
+
+  # Docker image to run
   docker_image = "mysql:8.0"
 
-  # Variables to initialize the mysql container
+  # Env vars used by the mysql image on startup
   env = {
     MYSQL_ROOT_PASSWORD = var.mysql_root_password
     MYSQL_DATABASE      = var.mysql_database
@@ -28,7 +34,7 @@ resource "render_service" "mysql" {
     MYSQL_PORT          = var.mysql_port
   }
 
-  # Persistent disk (ajuste a chave conforme provider)
+  # Persistent disk (ajuste se o provider usar outro bloco/atributo)
   persistent_disk = {
     size_gb    = var.mysql_disk_size_gb
     mount_path = "/var/lib/mysql"
@@ -36,16 +42,15 @@ resource "render_service" "mysql" {
 
   # Make DB internal/private so it's not publicly accessible
   internal = true
-
-  # Optional health check (ajuste se o provider suportar)
-  # health_check_path = "/"
 }
 
 # -------------------------
-# MongoDB service (container)
+# MongoDB private service (container)
 # -------------------------
-resource "render_service" "mongo" {
-  name         = var.mongodb_service_name
+resource "render_private_service" "mongo" {
+  name    = var.mongodb_service_name
+  project = try(render_project.project.id, null)
+
   docker_image = "mongo:6.0"
 
   env = {
@@ -64,27 +69,26 @@ resource "render_service" "mongo" {
 }
 
 # -------------------------
-# Django app service
+# Django app (public web service)
 # -------------------------
-resource "render_service" "app" {
+resource "render_web_service" "app" {
   name = var.app_service_name
+  project = try(render_project.project.id, null)
 
-  # Build from repo: provider implementations vary. Example generic fields:
-  build = {
-    # repo format owner/repo
-    repo   = var.app_repo
-    # branch to build
-    branch = var.app_branch
-    # Optional: build command (if you have a custom build)
-    build_command = var.app_build_command
-  }
+  # Build settings: provider implementations differ — try these fields first.
+  # If your provider requires a nested "build" block or "repo" attribute in another shape,
+  # adapte conforme o erro mostrado pelo terraform plan.
+  repo         = var.app_repo
+  branch       = var.app_branch
+  build_command = var.app_build_command
+  auto_deploy  = true
 
-  # Start command must use the PORT env provided by Render
-  # Note: escape ${PORT:-8000} as $${PORT:-8000} so Terraform doesn't parse it.
+  # Start command: use $${PORT:-8000} to avoid Terraform interpolation
   start_command = "gunicorn provision.wsgi:application --bind 0.0.0.0:$${PORT:-8000} --workers 3"
 
-  # Environment variables for the app - inject DB hostnames from the other services.
-  # Assumes the provider exposes an attribute like internal_hostname for internal services.
+  # Env vars for the Django app. Use the internal hostnames from the private services.
+  # Attribute names for internal hostnames may differ; if terraform errors, substitua
+  # render_private_service.*.internal_hostname pelo atributo correto exposto pelo provider.
   env = {
     DJANGO_SECRET_KEY           = var.django_secret_key
     DJANGO_DEBUG                = var.django_debug
@@ -93,32 +97,19 @@ resource "render_service" "app" {
     DJANGO_SUPERUSER_EMAIL      = var.django_superuser_email
     DJANGO_SUPERUSER_PASSWORD   = var.django_superuser_password
 
-    # MySQL connection - MySQL host will be the internal hostname of the mysql service.
-    MYSQL_HOST     = render_service.mysql.internal_hostname
+    MYSQL_HOST     = try(render_private_service.mysql.internal_hostname, "")
     MYSQL_PORT     = var.mysql_port
     MYSQL_DATABASE = var.mysql_database
     MYSQL_USER     = var.mysql_user
     MYSQL_PASSWORD = var.mysql_password
 
-    # Mongo connection - repository code expects MONGODB_HOST and MONGODB_PORT
-    MONGODB_HOST = render_service.mongo.internal_hostname
+    MONGODB_HOST = try(render_private_service.mongo.internal_hostname, "")
     MONGODB_PORT = var.mongodb_port
 
     PROVISION_API_KEY = var.provision_api_key
   }
 
-  # Health check path (adjust per provider)
-  # health_check_path = "/health" 
-  # health_check_interval = 10
-  # health_check_timeout = 5
-}
-
-# Depend on DB services to be sure they are created before app wiring
-resource "null_resource" "wait_for_db_creation" {
-  # This is a placeholder to express dependency ordering
-  depends_on = [
-    render_service.mysql,
-    render_service.mongo,
-    render_service.app
-  ]
+  # Health-check fields (opcionais e dependem do provider)
+  # health_check_path = "/"
+  # health_check_interval_seconds = 10
 }
