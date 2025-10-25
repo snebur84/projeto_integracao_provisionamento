@@ -17,10 +17,11 @@ resource "render_private_service" "mysql" {
   plan  = var.mysql_plan
   region = var.region
 
-  # runtime_source requires an object; use image (image_url)
+  # runtime_source using image (image_url must NOT include tag/digest)
   runtime_source = {
     image = {
-      image_url = "docker.io/library/mysql:8.0"
+      image_url = "docker.io/library/mysql"
+      tag       = "8.0"
     }
   }
 
@@ -40,8 +41,6 @@ resource "render_private_service" "mysql" {
     MYSQL_PORT          = { value = var.mysql_port }
   }
 
-  # associate to the created project environment (environment_id is the attribute on services)
-  # render_project.project.environments is a map; reference by key (local.env_key)
   environment_id = render_project.project.environments[local.env_key].id
 }
 
@@ -53,7 +52,8 @@ resource "render_private_service" "mongo" {
 
   runtime_source = {
     image = {
-      image_url = "docker.io/library/mongo:6.0"
+      image_url = "docker.io/library/mongo"
+      tag       = "6.0"
     }
   }
 
@@ -81,11 +81,11 @@ resource "render_web_service" "app" {
 
   runtime_source = {
     docker = {
-      repo_url       = var.app_repo
-      branch         = var.app_branch
+      repo_url        = var.app_repo
+      branch          = var.app_branch
       dockerfile_path = var.dockerfile_path
-      context        = var.docker_context
-      auto_deploy    = var.app_auto_deploy
+      context         = var.docker_context
+      auto_deploy     = var.app_auto_deploy
     }
   }
 
@@ -101,7 +101,6 @@ resource "render_web_service" "app" {
     DJANGO_SUPERUSER_EMAIL    = { value = var.django_superuser_email }
     DJANGO_SUPERUSER_PASSWORD = { value = var.django_superuser_password }
 
-    # DB connection values (render_private_service.*.url is computed by provider)
     MYSQL_HOST     = { value = try(render_private_service.mysql.url, "") }
     MYSQL_PORT     = { value = var.mysql_port }
     MYSQL_DATABASE = { value = var.mysql_database }
