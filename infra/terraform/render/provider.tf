@@ -3,8 +3,7 @@ terraform {
 
   required_providers {
     render = {
-      source  = "renderapp/render"
-      version = ">= 0.10.0"
+      source  = "render-oss/render"
     }
   }
 }
