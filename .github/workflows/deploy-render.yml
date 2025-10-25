@@ -61,6 +61,7 @@ jobs:
         working-directory: infra/terraform/render
         env:
           TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
+          TF_VAR_render_owner_id: ${{ secrets.RENDER_OWNER_ID }}
           TF_VAR_django_secret_key: ${{ secrets.DJANGO_SECRET_KEY }}
           TF_VAR_django_debug: ${{ secrets.DJANGO_DEBUG }}
           TF_VAR_django_allowed_hosts: ${{ secrets.DJANGO_ALLOWED_HOSTS }}
