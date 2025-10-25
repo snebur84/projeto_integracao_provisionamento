@@ -4,6 +4,12 @@ variable "project_name" {
   default     = "provision-mvp"
 }
 
+variable "render_api_key" {
+  type        = string
+  description = "Render API key. Pass via TF_VAR_render_api_key (GitHub Actions) or set TF var locally."
+  sensitive   = true
+}
+
 # Django / app
 variable "app_service_name" {
   type    = string
