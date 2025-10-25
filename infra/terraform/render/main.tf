@@ -3,6 +3,10 @@
   - render_service.mysql (container mysql:8)
   - render_service.mongo (container mongo:6)
   - render_service.app (Django app built from this repo)
+
+  Atenção: os atributos exatos de render_service podem variar entre versões do provider.
+  Se o provider exigir blocos/nomes diferentes (ex.: docker_image, repository, build,
+  persistent_disk), ajuste conforme a documentação do provider Render que você estiver usando.
 */
 
 # -------------------------
@@ -76,7 +80,8 @@ resource "render_service" "app" {
   }
 
   # Start command must use the PORT env provided by Render
-  start_command = "gunicorn provision.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 3"
+  # Note: escape ${PORT:-8000} as $${PORT:-8000} so Terraform doesn't parse it.
+  start_command = "gunicorn provision.wsgi:application --bind 0.0.0.0:$${PORT:-8000} --workers 3"
 
   # Environment variables for the app - inject DB hostnames from the other services.
   # Assumes the provider exposes an attribute like internal_hostname for internal services.
