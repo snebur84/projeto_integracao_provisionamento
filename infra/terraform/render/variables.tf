@@ -1,48 +1,47 @@
+# Project / environment
 variable "project_name" {
-  type        = string
-  description = "Name for the Render project that groups services"
-  default     = "provision-app"
+  type    = string
+  default = "mvp-project"
 }
 
+# Map of environments: key -> { name, protected_status, network_isolated }
 variable "project_environments" {
-  type        = list(string)
-  description = "Environments for the project (required by provider)"
-  default     = ["production"]
+  type = map(object({
+    name             = string
+    protected_status = string
+    network_isolated = bool
+  }))
+  default = {
+    production = {
+      name             = "production"
+      protected_status = "unprotected"
+      network_isolated = false
+    }
+  }
 }
 
-# Provider / region / runtime choices
+# Region / plans / runtime defaults
 variable "region" {
-  type        = string
-  description = "Render region (required by provider)"
-  default     = "oregon"
+  type    = string
+  default = "oregon"
 }
 
-variable "runtime_source" {
-  type        = string
-  description = "Runtime source type required by provider (e.g. \"docker\", \"docker_image\", etc.). Adjust if provider expects other value."
-  default     = "docker"
-}
-
-variable "render_api_key" {
-  type        = string
-  description = "Render API key. Pass via TF_VAR_render_api_key (GitHub Actions) or set as variable locally."
-  sensitive   = true
-}
-
-# Plans for services (provider requires a plan argument)
 variable "mysql_plan" {
-  type        = string
-  description = "Plan for MySQL private service (adjust to available plans)"
-  default     = "starter"
+  type    = string
+  default = "starter"
+}
+
+variable "mongodb_plan" {
+  type    = string
+  default = "starter"
 }
 
 variable "app_plan" {
-  type        = string
-  description = "Plan for the web service (adjust to available plans)"
-  default     = "starter"
+  type    = string
+  default = "starter"
 }
 
-# Django / app
+# App build/runtime settings
 variable "app_service_name" {
   type    = string
   default = "provision-app"
@@ -50,7 +49,7 @@ variable "app_service_name" {
 
 variable "app_repo" {
   type    = string
-  default = "snebur84/projeto_integracao_provisionamento"
+  default = "https://github.com/snebur84/projeto_integracao_provisionamento"
 }
 
 variable "app_branch" {
@@ -58,16 +57,22 @@ variable "app_branch" {
   default = "main"
 }
 
-variable "app_build_command" {
+variable "dockerfile_path" {
   type    = string
-  default = ""
+  default = "Dockerfile"
 }
 
-variable "app_docker_image" {
+variable "docker_context" {
   type    = string
-  default = "" # If you want to point to a prebuilt image, set this; otherwise leave empty to build from repo.
+  default = "."
 }
 
+variable "app_auto_deploy" {
+  type    = bool
+  default = true
+}
+
+# Django / app secrets
 variable "django_secret_key" {
   type      = string
   sensitive = true
@@ -144,11 +149,6 @@ variable "mysql_disk_size_gb" {
 variable "mongodb_service_name" {
   type    = string
   default = "mvp-mongo"
-}
-
-variable "mongodb_plan" {
-  type    = string
-  default = "starter"
 }
 
 variable "mongodb_root_username" {

@@ -1,34 +1,29 @@
 ```markdown
-# Render Terraform (adaptado para render-oss/render)
+# infra/terraform/render — adaptado ao provider render-oss/render
 
-O main.tf foi atualizado para usar os resource types detectados no provider `render-oss/render`:
-- render_project
-- render_private_service (usado para MySQL e Mongo)
-- render_web_service (usado para a app Django)
+Resumo:
+- Este conjunto de arquivos cria:
+  - um `render_project` com um ambiente (map de objetos)
+  - 2 `render_private_service` (MySQL e Mongo) usando `runtime_source.image`
+  - 1 `render_web_service` (Django app) usando `runtime_source.docker` (build via Dockerfile no repo)
+  - `env_vars` são configuradas diretamente como map de objetos `{ value = ... }` conforme schema do provider
 
-O que foi feito
-- Criei um render_project opcional para agrupar serviços.
-- Criei 2 render_private_service para MySQL e Mongo (imagens oficiais).
-- Criei um render_web_service para a app Django (build do repo).
-- Passei variáveis de ambiente para a app incluindo hostnames internos das services.
+Importante:
+- O provider exige `runtime_source` como objeto com sub-blocos `docker`, `image` ou `native_runtime`.
+- `render_project.environments` é um map de objects — use a mesma estrutura no `variable "project_environments"`.
+- A associação entre serviços e o ambiente do projeto é feita via `environment_id = render_project.project.environments["<key>"].id`.
 
-Atenção (possíveis ajustes)
-- Alguns atributos (por exemplo `persistent_disk`, `internal_hostname`, `default_domain`, `repo`, `build_command`) podem ter nomes/detalhes diferentes na versão do provider que você tem instalada. Se terraform plan/reportar erros de "Unknown attribute" ou "Unsupported block", cole aqui o trecho do erro que eu corrijo imediatamente.
-- Se ocorrer um ciclo de dependência (env_group vs service criado), a alternativa é usar render_env_group + render_env_group_link ou mover variáveis sensíveis para env groups. Eu deixei tudo direto no bloco `env` da web_service para simplificar o fluxo inicial.
-- Garanta que a conta Render tem suporte a Persistent Disk e Private/Internal services no plano da conta.
-
-Passos para testar localmente (recomendado)
-1. Ajuste variáveis sensíveis via TF_VAR_* ou terraform.tfvars (não comite).
-   export TF_VAR_render_api_key="<RENDER_API_KEY>"
-   export TF_VAR_django_secret_key="<DJANGO_SECRET_KEY>"
-   export TF_VAR_mysql_root_password="<MYSQL_ROOT_PASSWORD>"
-   export TF_VAR_mysql_password="<MYSQL_PASSWORD>"
-   export TF_VAR_mongodb_root_password="<MONGODB_ROOT_PASSWORD>"
-2. No diretório infra/terraform/render:
+Como testar localmente:
+1. Exporte a API key:
+   export TF_VAR_render_api_key="<your_render_api_key>"
+2. (Opcional) export TF_VAR_render_owner_id if needed
+3. Ajuste os secrets/variáveis sensíveis via TF_VAR_* localmente (não comite)
+4. Rode:
+   cd infra/terraform/render
    terraform init -upgrade
+   terraform validate
    terraform plan -out=tfplan
    terraform apply -input=false -auto-approve tfplan
-3. Se houver erros, cole os trechos aqui e eu corrijo.
 
-Se quiser, eu já adapto os blocos caso o provider reclame de atributos específicos (por exemplo se o provider exigir um bloco "build" em vez de "repo/branch"), cole o erro e eu atualizo o main.tf imediatamente.
+Se houver erros de "unknown attribute" ou "unsupported block", cole o trecho exato do erro aqui e eu ajusto os blocos conforme a versão do provider instalado no runner.
 ```

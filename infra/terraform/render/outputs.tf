@@ -1,6 +1,11 @@
 output "project_id" {
   value       = try(render_project.project.id, "")
-  description = "Render project id (if created)"
+  description = "Render project id"
+}
+
+output "project_environments" {
+  value       = try(render_project.project.environments, {})
+  description = "Map of created environments on the project"
 }
 
 output "mysql_service_id" {
@@ -8,19 +13,19 @@ output "mysql_service_id" {
   description = "ID of the MySQL private service"
 }
 
-output "mysql_internal_hostname" {
-  value       = try(render_private_service.mysql.internal_hostname, "")
-  description = "Internal hostname for MySQL (may be empty if attribute name differs)"
+output "mysql_service_url" {
+  value       = try(render_private_service.mysql.url, "")
+  description = "URL (internal/external) for the MySQL service"
 }
 
 output "mongo_service_id" {
   value       = try(render_private_service.mongo.id, "")
-  description = "ID of the Mongo private service"
+  description = "ID of the MongoDB private service"
 }
 
-output "mongodb_internal_hostname" {
-  value       = try(render_private_service.mongo.internal_hostname, "")
-  description = "Internal hostname for MongoDB (may be empty if attribute name differs)"
+output "mongo_service_url" {
+  value       = try(render_private_service.mongo.url, "")
+  description = "URL for the MongoDB service"
 }
 
 output "app_service_id" {
@@ -28,7 +33,7 @@ output "app_service_id" {
   description = "ID of the web service"
 }
 
-output "app_public_domain" {
-  value       = try(render_web_service.app.default_domain, try(render_web_service.app.url, ""))
-  description = "Public domain or url of the web service (may be empty until domain assigned)"
+output "app_public_url" {
+  value       = try(render_web_service.app.url, "")
+  description = "Public URL of the web app (empty until assigned)"
 }
