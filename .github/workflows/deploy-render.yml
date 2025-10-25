@@ -79,7 +79,7 @@ jobs:
         run: terraform apply -input=false -auto-approve tfplan
 
       - name: Terraform Output (JSON)
-        if: always()
+        if: ${{ success() }}
         working-directory: infra/terraform/render
         env:
           TF_VAR_render_api_key: ${{ secrets.RENDER_API_KEY }}
