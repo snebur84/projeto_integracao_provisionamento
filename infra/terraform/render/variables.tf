@@ -1,13 +1,45 @@
 variable "project_name" {
   type        = string
   description = "Name for the Render project that groups services"
-  default     = "provision-mvp"
+  default     = "provision-app"
 }
 
-variable "render_api_key" {
+variable "project_environments" {
+  type        = list(string)
+  description = "Environments for the project (required by provider)"
+  default     = ["production"]
+}
+
+# Provider / region / runtime choices
+variable "region" {
   type        = string
-  description = "Render API key. Pass via TF_VAR_render_api_key (GitHub Actions) or set TF var locally."
-  sensitive   = true
+  description = "Render region (required by provider)"
+  default     = "oregon"
+}
+
+variable "runtime_source" {
+  type        = string
+  description = "Runtime source type required by provider (e.g. \"docker\", \"docker_image\", etc.). Adjust if provider expects other value."
+  default     = "docker"
+}
+
+# Plans for services (provider requires a plan argument)
+variable "mysql_plan" {
+  type        = string
+  description = "Plan for MySQL private service (adjust to available plans)"
+  default     = "starter"
+}
+
+variable "mongodb_plan" {
+  type        = string
+  description = "Plan for MongoDB private service (adjust to available plans)"
+  default     = "starter"
+}
+
+variable "app_plan" {
+  type        = string
+  description = "Plan for the web service (adjust to available plans)"
+  default     = "starter"
 }
 
 # Django / app
@@ -29,6 +61,11 @@ variable "app_branch" {
 variable "app_build_command" {
   type    = string
   default = ""
+}
+
+variable "app_docker_image" {
+  type    = string
+  default = "" # If you want to point to a prebuilt image, set this; otherwise leave empty to build from repo.
 }
 
 variable "django_secret_key" {
@@ -70,7 +107,7 @@ variable "provision_api_key" {
 # MySQL
 variable "mysql_service_name" {
   type    = string
-  default = "provision-mysql"
+  default = "mvp-mysql"
 }
 
 variable "mysql_root_password" {
@@ -107,6 +144,11 @@ variable "mysql_disk_size_gb" {
 variable "mongodb_service_name" {
   type    = string
   default = "mvp-mongo"
+}
+
+variable "mongodb_plan" {
+  type    = string
+  default = "starter"
 }
 
 variable "mongodb_root_username" {
