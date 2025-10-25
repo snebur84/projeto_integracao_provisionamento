@@ -1,7 +1,7 @@
 # Project / environment
 variable "project_name" {
   type    = string
-  default = "mvp-project"
+  default = "provision"
 }
 
 # Map of environments: key -> { name, protected_status, network_isolated }
