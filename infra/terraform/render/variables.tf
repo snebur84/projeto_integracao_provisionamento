@@ -23,6 +23,12 @@ variable "runtime_source" {
   default     = "docker"
 }
 
+variable "render_api_key" {
+  type        = string
+  description = "Render API key. Pass via TF_VAR_render_api_key (GitHub Actions) or set as variable locally."
+  sensitive   = true
+}
+
 # Plans for services (provider requires a plan argument)
 variable "mysql_plan" {
   type        = string
