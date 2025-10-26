@@ -92,25 +92,39 @@ jobs:
         with:
           terraform_version: 1.5.7
 
-      - name: Bootstrap - write tfvars
+      - name: Bootstrap - write tfvars (use expected variable names)
         working-directory: infra/terraform/bootstrap/gcp
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          GCP_ZONE: ${{ secrets.GCP_ZONE }}
         run: |
           set -euo pipefail
+
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
+
+          # determine zone: prefer explicit secret GCP_ZONE, else use region-a
+          zone="${GCP_ZONE:-}"
+          if [ -z "$zone" ]; then
+            zone="${region}-a"
+          fi
+
+          # bucket name sanitized and truncated to 63 chars (GCS rules)
           bucket="${project}-tfstate-${env}"
           bucket=$(printf '%s' "$bucket" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | cut -c1-63)
-          printf 'project = "%s"\n' "$project" > terraform.tfvars
-          printf 'region = "%s"\n' "$region" >> terraform.tfvars
+
+          # WRITE the tfvars using the variable names expected by the module
+          printf 'gcp_project = "%s"\n' "$project" > terraform.tfvars
+          printf 'gcp_region = "%s"\n' "$region" >> terraform.tfvars
+          printf 'gcp_zone = "%s"\n' "$zone" >> terraform.tfvars
           printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars
+
           echo "Wrote terraform.tfvars:"
           sed -n '1,120p' terraform.tfvars
 
@@ -147,10 +161,11 @@ jobs:
             echo "Bucket not present — Terraform will create it"
           fi
 
-      - name: Bootstrap - init and apply
+      - name: Bootstrap - init and apply (reads terraform.tfvars automatically)
         working-directory: infra/terraform/bootstrap/gcp
         run: |
           set -euo pipefail
+          # init and apply will read terraform.tfvars in this working dir
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
@@ -222,8 +237,10 @@ jobs:
           set -euo pipefail
           mkdir -p infra/terraform/gcp
           env="${ENV_NAME:-prod}"
-          printf 'bucket = "%s"\n' "$TF_BUCKET" > infra/terraform/gcp/backend.hcl
-          printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
+          printf 'bucket = "%s"\n' "$TF_BUCKET" > \
+            infra/terraform/gcp/backend.hcl
+          printf 'prefix = "%s"\n' "env/${env}" >> \
+            infra/terraform/gcp/backend.hcl
           sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
       - name: Terraform init (gcp infra)
