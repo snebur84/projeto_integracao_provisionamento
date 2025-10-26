@@ -20,9 +20,9 @@ variable "environment" {
 }
 
 variable "instance_name" {
-  description = "Optional instance name"
+  description = "Instance name"
   type        = string
-  default     = null
+  default     = "provision-instance"
 }
 
 variable "machine_type" {
@@ -41,12 +41,6 @@ variable "boot_disk_size_gb" {
   description = "Boot disk size in GB"
   type        = number
   default     = 20
-}
-
-variable "boot_disk_type" {
-  description = "Boot disk type"
-  type        = string
-  default     = "pd-standard"
 }
 
 variable "network" {
@@ -77,4 +71,16 @@ variable "instance_labels" {
   description = "Map of labels to apply to the instance"
   type        = map(string)
   default     = {}
+}
+
+variable "container_image" {
+  description = "Container image to run on the VM (example: nginx:stable or gcr.io/PROJECT/image:tag)"
+  type        = string
+  default     = "nginx:stable"
+}
+
+variable "container_port" {
+  description = "Port that the container listens on"
+  type        = number
+  default     = 80
 }
