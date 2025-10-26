@@ -130,27 +130,37 @@ jobs:
 
       - name: Import existing state bucket if present
         working-directory: infra/terraform/bootstrap/gcp
+        env:
+          TF_INPUT: "false"
+          # alternativa: garantir variáveis explicitamente
+          # TF_VAR_project: ${{ secrets.GCP_PROJECT }}
         run: |
           set -euo pipefail
+
           if [ ! -f terraform.tfvars ]; then
-            echo "terraform.tfvars not found; skip import"
+            echo "terraform.tfvars not found; skipping import check"
             exit 0
           fi
-          BUCKET=$(awk -F'"' '/state_bucket_name/ {print $2; exit}' \
-            terraform.tfvars || true)
+
+          BUCKET=$(awk -F'"' '/state_bucket_name/ {print $2; exit}' terraform.tfvars || true)
           if [ -z "$BUCKET" ]; then
-            echo "state_bucket_name not found; skip import"
+            echo "state_bucket_name not found in terraform.tfvars; skipping import"
             exit 0
           fi
-          echo "Checking bucket gs://$BUCKET..."
+
+          echo "Checking if bucket gs://$BUCKET exists..."
           if gsutil ls -b "gs://$BUCKET" >/dev/null 2>&1; then
-            echo "Bucket exists — import to Terraform state if needed"
+            echo "Bucket exists — ensuring Terraform state knows about it."
+
+            # init required before import
             terraform init -input=false
-            if terraform state list | grep -q \
-               '^google_storage_bucket\.terraform_state$'; then
-              echo "Already in state; skip import"
+
+            # if resource already in state, skip import
+            if terraform state list | grep -q '^google_storage_bucket\.terraform_state$'; then
+              echo "google_storage_bucket.terraform_state already in state; skipping import."
             else
-              terraform import -lock=false \
+              # pass -var-file to avoid interactive prompts for required variables
+              terraform import -lock=false -var-file=terraform.tfvars \
                 'google_storage_bucket.terraform_state' "$BUCKET" || {
                 echo "terraform import failed"
                 terraform state list || true
@@ -158,7 +168,7 @@ jobs:
               }
             fi
           else
-            echo "Bucket not present — Terraform will create it"
+            echo "Bucket does not exist — Terraform will create it."
           fi
 
       - name: Bootstrap - init and apply (reads terraform.tfvars automatically)
