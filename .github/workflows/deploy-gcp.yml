@@ -12,11 +12,15 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Check required GCP secret
+      - name: Check required GCP secrets
         run: |
           set -euo pipefail
           if [ -z "${{ secrets.GCP_SA_KEY }}" ]; then
             echo "ERROR: missing secret GCP_SA_KEY"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GCP_PROJECT }}" ]; then
+            echo "ERROR: missing secret GCP_PROJECT"
             exit 1
           fi
 
@@ -50,11 +54,29 @@ jobs:
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         run: |
           set -euo pipefail
+
+          # values
           env="${ENV_NAME:-prod}"
-          printf 'environment = "%s"\n' "$env" > terraform.tfvars
-          printf 'gcp_region = "%s"\n' "$GCP_REGION" >> terraform.tfvars
+          project="${GCP_PROJECT}"
+          region="${GCP_REGION:-us-central1}"
+
+          # build a valid GCS bucket name: lowercase, replace invalid chars, keep reasonable length
+          # example: <project>-tfstate-<env>
+          bucket="${project}-tfstate-${env}"
+          # sanitize: lowercase and replace any non alnum or '-' with '-'
+          bucket="$(echo "$bucket" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+          # ensure bucket name length <= 63
+          bucket="$(echo "$bucket" | cut -c1-63)"
+
+          printf 'project = "%s"\n' "$project" > terraform.tfvars
+          printf 'region = "%s"\n' "$region" >> terraform.tfvars
+          printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars
+
+          echo "Wrote terraform.tfvars:"
+          sed -n '1,120p' terraform.tfvars
 
       - name: Bootstrap - init and apply
         working-directory: infra/terraform/bootstrap/gcp
