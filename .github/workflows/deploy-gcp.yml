@@ -1,65 +1,106 @@
 ---
-name: Deploy - GCP
+name: Deploy GCP infra
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment (ex.: prod, staging, dev)"
-        required: false
-        default: "prod"
-  push:
-    branches: ["main"]
-    paths:
-      - "infra/terraform/**"
-      - ".github/workflows/deploy-gcp.yml"
-
-permissions:
-  contents: read
-  id-token: write
-
-concurrency:
-  group: deploy-gcp-${{ github.ref }}
-  cancel-in-progress: true
+        required: true
+        default: prod
 
 jobs:
-  deploy:
-    name: Deploy to GCP
+  validate:
     runs-on: ubuntu-latest
+    steps:
+      - name: Check required GCP secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.GCP_SA_KEY }}" ]; then
+            echo "ERROR: missing secret GCP_SA_KEY"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GCP_PROJECT }}" ]; then
+            echo "ERROR: missing secret GCP_PROJECT"
+            exit 1
+          fi
+
+  deploy-gcp:
+    runs-on: ubuntu-latest
+    needs: validate
     env:
-      TF_IN_AUTOMATION: "true"
+      TF_IN_AUTOMATION: true
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Prefer Workload Identity Federation
-      - name: Auth to GCP via Workload Identity Federation
-        if: ${{ secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SA_EMAIL != '' }}
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SA_EMAIL }}
-          token_format: access_token
+      - name: List bootstrap dir (debug)
+        run: |
+          echo "Listing infra/terraform/bootstrap/gcp"
+          ls -la infra/terraform/bootstrap/gcp || true
 
-      # Fallback to Service Account Key if necessary
-      - name: Auth to GCP via Service Account Key
-        if: ${{ !(secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SA_EMAIL != '') && secrets.GCP_SA_KEY != '' }}
-        uses: google-github-actions/auth@v2
+      - name: Authenticate to GCP (action)
+        uses: google-github-actions/auth@v1
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v1
         with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
           project_id: ${{ secrets.GCP_PROJECT }}
-          export_default_credentials: true
 
-      - name: Verify gcloud auth
+      - name: Validate SA and Storage perms
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
           set -euo pipefail
-          gcloud auth list --filter=status:ACTIVE
-          gcloud config list
+
+          # write key to temp file and secure it
+          printf '%s' "$GCP_SA_KEY" > /tmp/gcp_key.json
+          chmod 600 /tmp/gcp_key.json
+
+          CLIENT_EMAIL=$(jq -r '.client_email // empty' /tmp/gcp_key.json || true)
+          if [ -z "$CLIENT_EMAIL" ]; then
+            echo "ERROR: service account key missing client_email or is invalid"
+            rm -f /tmp/gcp_key.json
+            exit 1
+          fi
+          echo "Service account: $CLIENT_EMAIL"
+
+          # explicit activation (double-check the auth)
+          gcloud auth activate-service-account \
+            --key-file=/tmp/gcp_key.json --project="$GCP_PROJECT"
+
+          echo "Active account:"
+          gcloud auth list
+
+          echo "Project config:"
+          gcloud config get-value project || true
+
+          # check Cloud Storage API and try to enable if not present
+          if gcloud services list --enabled --project="$GCP_PROJECT" \
+             --filter="NAME:storage.googleapis.com" --format="value(NAME)" \
+             | grep -q storage.googleapis.com; then
+            echo "Cloud Storage API enabled"
+          else
+            echo "Cloud Storage API not enabled; attempting to enable"
+            gcloud services enable storage.googleapis.com --project="$GCP_PROJECT" || true
+          fi
+
+          # quick permission check for buckets
+          if gsutil ls -p "$GCP_PROJECT" >/dev/null 2>&1; then
+            echo "gsutil access OK"
+          else
+            echo "Warning: gsutil could not list buckets."
+            echo "IAM roles for the SA (may fail if not permitted):"
+            gcloud projects get-iam-policy "$GCP_PROJECT" --format=json \
+              | jq -r --arg sa "serviceAccount:$CLIENT_EMAIL" \
+                '.bindings[] | select(.members[]? == $sa) | .role' || true
+          fi
+
+          rm -f /tmp/gcp_key.json
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -74,13 +115,16 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         run: |
           set -euo pipefail
+
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
 
           bucket="${project}-tfstate-${env}"
-          bucket=$(printf '%s' "$bucket" | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9-]/-/g' | cut -c1-63)
+          bucket=$(printf '%s' "$bucket" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g' \
+            | cut -c1-63)
 
           printf 'project = "%s"\n' "$project" > terraform.tfvars
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
@@ -93,6 +137,7 @@ jobs:
         working-directory: infra/terraform/bootstrap/gcp
         run: |
           set -euo pipefail
+
           if [ ! -f terraform.tfvars ]; then
             echo "terraform.tfvars not found; skipping import check"
             exit 0
@@ -134,8 +179,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Prefer -raw to get just the value
           TF_BUCKET=""
-          # 1) Try terraform output -raw (preferred)
+
           if terraform output -help 2>/dev/null | grep -q '\-raw'; then
             TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
             if [ -z "$TF_BUCKET" ]; then
@@ -143,26 +189,19 @@ jobs:
             fi
           fi
 
-          # 2) Fallback: use -json but strip ANSI/control chars and extract with jq
+          # fallback to json+jq if -raw not available or didn't return value
           if [ -z "$TF_BUCKET" ]; then
-            terraform output -json -no-color > /tmp/terraform_output.json 2>/tmp/terraform_output.err || true
-            sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/terraform_output.json > /tmp/terraform_output.clean.json || true
-
-            if jq -e . /tmp/terraform_output.clean.json >/dev/null 2>&1; then
-              echo "Outputs keys available:"
-              jq -r 'keys[]' /tmp/terraform_output.clean.json || true
-              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.clean.json || true)
+            if terraform output -json -no-color >/tmp/terraform_output.json 2>/tmp/terraform_output.err; then
+              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.json || true)
             else
-              echo "ERROR: terraform output -json produced invalid JSON. Dumping stderr:"
+              echo "ERROR: terraform output -json failed. Stderr:"
               sed -n '1,200p' /tmp/terraform_output.err || true
             fi
-
-            rm -f /tmp/terraform_output.json /tmp/terraform_output.clean.json /tmp/terraform_output.err || true
+            rm -f /tmp/terraform_output.json /tmp/terraform_output.err || true
           fi
 
           if [ -z "$TF_BUCKET" ]; then
             echo "ERROR: could not determine TF_BUCKET from bootstrap outputs."
-            echo "Make sure the bootstrap module defines output 'state_bucket' or 'state_bucket_name'."
             exit 6
           fi
 
