@@ -127,6 +127,38 @@ jobs:
           printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
           sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
+      - name: Write terraform.tfvars for infra (gcp)
+        working-directory: infra/terraform/gcp
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          GCP_ZONE: ${{ secrets.GCP_ZONE }}
+          ENV_NAME: ${{ github.event.inputs.environment }}
+          TF_BUCKET: ${{ env.TF_BUCKET }}
+        run: |
+          set -euo pipefail
+
+          # defaults (se não definidos no Secrets)
+          project="${GCP_PROJECT}"
+          region="${GCP_REGION:-us-central1}"
+          zone="${GCP_ZONE:-us-central1-a}"
+          env="${ENV_NAME:-prod}"
+          bucket="${TF_BUCKET:-}"
+
+          echo "Writing terraform.tfvars in infra/terraform/gcp (project, region, zone, state_bucket)"
+          printf 'gcp_project = "%s"\n' "$project" > terraform.tfvars
+          printf 'gcp_region  = "%s"\n' "$region" >> terraform.tfvars
+          printf 'gcp_zone    = "%s"\n' "$zone" >> terraform.tfvars
+
+          if [ -n "$bucket" ]; then
+            # some modules expect state_bucket_name or state_bucket; write both safely
+            printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars || true
+            printf 'state_bucket = "%s"\n' "$bucket" >> terraform.tfvars || true
+          fi
+
+          echo "Wrote terraform.tfvars (preview):"
+          sed -n '1,120p' terraform.tfvars || true
+
       - name: Terraform init (gcp infra)
         working-directory: infra/terraform/gcp
         run: |
