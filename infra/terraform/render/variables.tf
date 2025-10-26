@@ -29,6 +29,11 @@ variable "postgres_password" {
   default = ""
 }
 
+variable "postgres_plan" {
+  type    = string
+  default = "free"
+}
+
 # Imagem usada para o serviço Postgres: separa o repositório (image_url) do tag (image_tag)
 variable "postgres_image_repo" {
   type    = string
