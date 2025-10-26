@@ -1,10 +1,13 @@
 # infra/terraform/render/main.tf
-# Cria um project, um serviço web (Django) e opcionalmente um serviço privado Postgres
-# Adaptado ao provider render-oss/render e ao esquema exigido (image_url, repo_url, branch, plan, env_vars).
+# Ajustado para diferenciar image_url e tag conforme schema do provider render-oss/render.
+
+locals {
+  sanitized_name = replace(var.service_name, "_", "-")
+}
 
 # Projeto que agrupa os serviços (ambientes)
 resource "render_project" "project" {
-  name = var.service_name
+  name = local.sanitized_name
 
   environments = {
     production = {
@@ -18,26 +21,25 @@ resource "render_project" "project" {
 resource "render_private_service" "postgres" {
   count = var.create_postgres ? 1 : 0
 
-  name = "${var.service_name}-postgres"
+  name = "${local.sanitized_name}-postgres"
 
-  # runtime_source como objeto: image requer image_url
+  # runtime_source como objeto: informamos image_url (sem tag) e tag separadamente
   runtime_source = {
     image = {
-      image_url = var.postgres_image_url
+      image_url = var.postgres_image_repo
+      tag       = var.postgres_image_tag
     }
   }
 
   plan   = var.postgres_plan
   region = var.region
 
-  # env_vars: map de objetos { value = ... } (schema do provider)
   env_vars = {
     POSTGRES_DB       = { value = var.postgres_database }
     POSTGRES_USER     = { value = var.postgres_user }
     POSTGRES_PASSWORD = { value = var.postgres_password }
   }
 
-  # Conectar ao environment do projeto
   environment_id = render_project.project.environments["production"].id
 }
 
@@ -45,9 +47,8 @@ resource "render_private_service" "postgres" {
 resource "render_web_service" "provision" {
   count = var.create_service ? 1 : 0
 
-  name = var.service_name
+  name = local.sanitized_name
 
-  # runtime_source como objeto (docker) — requer repo_url e branch
   runtime_source = {
     docker = {
       repo_url        = var.repo_url
@@ -63,12 +64,7 @@ resource "render_web_service" "provision" {
 
   env_vars = {
     DJANGO_SETTINGS_MODULE = { value = "provision.settings_render" }
-    # outros env vars mínimos podem ser adicionados aqui como placeholders
   }
 
   environment_id = render_project.project.environments["production"].id
 }
-
-# Observação:
-# - Preencha/ajuste var.* (repo_url, branch, plans, region) via terraform.tfvars, TF_VAR_* no CI ou defaults abaixo.
-# - O workflow do GitHub Actions deve passar TF_VAR_repo_url e TF_VAR_repo_branch se desejar controlar o source via CI.

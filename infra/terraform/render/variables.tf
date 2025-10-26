@@ -1,6 +1,6 @@
 variable "service_name" {
   type    = string
-  # Ajustado para usar hífen por padrão (underscores podem ser rejeitados pelo provider)
+  # Ajustado para hífen por padrão (underscores podem ser rejeitados pelo provider)
   default = "provision-app"
 }
 
@@ -29,10 +29,15 @@ variable "postgres_password" {
   default = ""
 }
 
-# Imagem usada para o serviço Postgres (provider exige image_url)
-variable "postgres_image_url" {
+# Imagem usada para o serviço Postgres: separa o repositório (image_url) do tag (image_tag)
+variable "postgres_image_repo" {
   type    = string
-  default = "docker.io/library/postgres:15-alpine"
+  default = "docker.io/library/postgres"
+}
+
+variable "postgres_image_tag" {
+  type    = string
+  default = "15-alpine"
 }
 
 # Planos/tiers utilizados
