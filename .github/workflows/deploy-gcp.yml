@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy (e.g., prod, staging)'
+        description: 'Environment to deploy (prod, staging)'
         required: true
         default: prod
       bootstrap:
-        description: 'Run bootstrap apply (creates bootstrap resources)'
+        description: 'Run bootstrap apply'
         required: false
         default: 'false'
 
@@ -48,7 +48,7 @@ jobs:
         with:
           terraform_version: '1.5.7'
 
-      - name: Optional: run bootstrap apply (only if requested)
+      - name: Optional bootstrap apply
         if: ${{ github.event.inputs.bootstrap == 'true' }}
         working-directory: infra/terraform/bootstrap/gcp
         env:
@@ -72,11 +72,10 @@ jobs:
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
           printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars
 
-          echo "Running bootstrap terraform init/apply (non-interactive)"
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      - name: Ensure GCS backend bucket exists and export TF_BUCKET (idempotent)
+      - name: Ensure GCS backend bucket exists and export TF_BUCKET
         working-directory: infra/terraform/bootstrap/gcp
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
@@ -89,34 +88,28 @@ jobs:
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
 
-          # deterministic bucket name (same logic used by bootstrap)
           bucket="${project}-tfstate-${env}"
           bucket=$(printf '%s' "$bucket" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | cut -c1-63)
 
-          echo "Using bucket name: ${bucket}"
+          echo "Using bucket: ${bucket}"
 
-          # If bucket exists (any project), gsutil ls -b will succeed.
           if gsutil ls -b "gs://${bucket}" >/dev/null 2>&1; then
-            echo "Bucket gs://${bucket} already exists"
+            echo "Bucket exists: gs://${bucket}"
           else
-            echo "Bucket gs://${bucket} not found; attempting to create in project ${project}"
-            if gsutil mb -p "${project}" -l "${region}" "gs://${bucket}"; then
-              echo "Created bucket gs://${bucket}"
-            else
-              echo "ERROR: Failed to create gs://${bucket}"
-              echo "Ensure the service account has storage.buckets.create permission"
+            echo "Creating bucket: gs://${bucket}"
+            if ! gsutil mb -p "${project}" -l "${region}" "gs://${bucket}"; then
+              echo "ERROR: failed to create gs://${bucket}"
               exit 1
             fi
           fi
 
-          # Export TF_BUCKET for downstream steps (just the bucket name)
           echo "TF_BUCKET=${bucket}" >> $GITHUB_ENV
           echo "Exported TF_BUCKET=${bucket}"
 
-      - name: Write backend.hcl for infra (gcp)
+      - name: Write backend.hcl for infra
         env:
           TF_BUCKET: ${{ env.TF_BUCKET }}
           ENV_NAME: ${{ github.event.inputs.environment }}
@@ -132,14 +125,15 @@ jobs:
           env="${ENV_NAME:-prod}"
           printf 'bucket = "%s"\n' "${TF_BUCKET}" > infra/terraform/gcp/backend.hcl
           printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
-          echo "Wrote infra backend.hcl:"
-          sed -n '1,120p' infra/terraform/gcp/backend.hcl || true
+          sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
       - name: Terraform init (gcp infra)
         working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          terraform init \
+            -backend-config=backend.hcl \
+            -reconfigure -input=false
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
