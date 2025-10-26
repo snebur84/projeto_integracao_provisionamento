@@ -34,7 +34,7 @@ variable "machine_type" {
 variable "boot_image" {
   description = "Boot image for instance"
   type        = string
-  default     = "debian-cloud/debian-12"
+  default     = "ubuntu-os-cloud/ubuntu-2204-lts"
 }
 
 variable "boot_disk_size_gb" {

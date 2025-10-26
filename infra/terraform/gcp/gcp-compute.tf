@@ -4,13 +4,13 @@ resource "google_compute_instance" "provision" {
   zone         = var.gcp_zone
   machine_type = var.machine_type
 
-  boot_disk {
-    initialize_params {
-      image = var.boot_image
-      size  = var.boot_disk_size_gb
-      type  = "pd-standard"
-    }
+boot_disk {
+  initialize_params {
+    image = "ubuntu-os-cloud/ubuntu-2204-lts"
+    size  = var.boot_disk_size_gb
+    type  = "pd-standard"
   }
+}
 
   network_interface {
     network = var.network
