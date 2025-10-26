@@ -1,15 +1,17 @@
 ---
-name: Deploy GCP Infrastructure
+name: Deploy - GCP
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       environment:
-        description: "Target environment (ex.: prod, staging, dev)"
+        description: >
+          Target environment (ex.: prod, staging, dev)
         required: false
         default: "prod"
   push:
-    branches: ["main"]
+    branches:
+      - "main"
     paths:
       - "infra/terraform/**"
       - ".github/workflows/deploy-gcp.yml"
@@ -33,21 +35,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Prefer Workload Identity Federation if configured
       - name: Auth to GCP via Workload Identity Federation
         if: ${{ secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SA_EMAIL != '' }}
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          workload_identity_provider: >-
+            ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: >-
+            ${{ secrets.GCP_SA_EMAIL }}
           token_format: access_token
 
-      # Fallback to Service Account JSON if WIF isn't available
       - name: Auth to GCP via Service Account Key
-        if: ${{ !(secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SA_EMAIL != '') && secrets.GCP_SA_KEY != '' }}
+        if: >-
+          ${{ !(secrets.GCP_WIF_PROVIDER != '' && secrets.GCP_SA_EMAIL != '')
+              && secrets.GCP_SA_KEY != '' }}
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          credentials_json: >-
+            ${{ secrets.GCP_SA_KEY }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -69,9 +74,12 @@ jobs:
       - name: Bootstrap - write tfvars
         working-directory: infra/terraform/bootstrap/gcp
         env:
-          ENV_NAME: ${{ github.event.inputs.environment }}
-          GCP_REGION: ${{ secrets.GCP_REGION }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          ENV_NAME: >-
+            ${{ github.event.inputs.environment }}
+          GCP_REGION: >-
+            ${{ secrets.GCP_REGION }}
+          GCP_PROJECT: >-
+            ${{ secrets.GCP_PROJECT }}
         run: |
           set -euo pipefail
           env="${ENV_NAME:-prod}"
@@ -102,25 +110,33 @@ jobs:
             exit 0
           fi
 
-          BUCKET=$(awk -F'"' '/state_bucket_name/ {print $2; exit}' terraform.tfvars || true)
+          BUCKET=$(
+            awk -F'"' \
+              '/state_bucket_name/ {print $2; exit}' \
+              terraform.tfvars || true
+          )
+
           if [ -z "$BUCKET" ]; then
-            echo "state_bucket_name not found in terraform.tfvars; skipping import"
+            echo "state_bucket_name not found in terraform.tfvars; skip"
             exit 0
           fi
 
           echo "Checking if bucket gs://$BUCKET exists..."
           if gsutil ls -b "gs://$BUCKET" >/dev/null 2>&1; then
-            echo "Bucket exists — ensuring Terraform state knows about it."
+            echo "Bucket exists — ensuring Terraform state is imported."
             terraform init -input=false
 
-            if terraform state list | grep -q '^google_storage_bucket\.terraform_state$'; then
-              echo "google_storage_bucket.terraform_state already in state; skipping import."
+            if terraform state list \
+              | grep -q '^google_storage_bucket\.terraform_state$'; then
+              echo "google_storage_bucket.terraform_state already in state."
             else
-              terraform import -lock=false 'google_storage_bucket.terraform_state' "$BUCKET" || {
-                echo "terraform import failed"
-                terraform state list || true
-                exit 1
-              }
+              terraform import -lock=false \
+                'google_storage_bucket.terraform_state' \
+                "$BUCKET" || {
+                  echo "terraform import failed"
+                  terraform state list || true
+                  exit 1
+                }
             fi
           else
             echo "Bucket does not exist — Terraform will create it."
@@ -133,7 +149,6 @@ jobs:
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      # Se existir um secret TF_BUCKET, usá-lo e pular parsing de outputs
       - name: Use TF_BUCKET from secret if provided
         env:
           TF_BUCKET_SECRET: ${{ secrets.TF_BUCKET }}
@@ -141,12 +156,11 @@ jobs:
           set -euo pipefail
           if [ -n "${TF_BUCKET_SECRET:-}" ]; then
             echo "TF_BUCKET=${TF_BUCKET_SECRET}" >> "$GITHUB_ENV"
-            echo "Using TF_BUCKET from secret; skipping terraform output parsing."
+            echo "Using TF_BUCKET from secret; skipping output parsing."
           else
-            echo "No TF_BUCKET secret provided; will parse from terraform outputs."
+            echo "No TF_BUCKET secret provided; will parse outputs."
           fi
 
-      # Extração ROBUSTA dos outputs do bootstrap, apenas se TF_BUCKET não veio do secret
       - name: Get bootstrap outputs - save JSON (robust)
         if: ${{ env.TF_BUCKET == '' }}
         working-directory: infra/terraform/bootstrap/gcp
@@ -155,15 +169,17 @@ jobs:
           set -euo pipefail
 
           # Não usar -no-color aqui
-          terraform output -json > /tmp/bootstrap.raw 2> /tmp/bootstrap.err || true
+          terraform output -json > /tmp/bootstrap.raw \
+            2> /tmp/bootstrap.err || true
 
           if [ -s /tmp/bootstrap.err ]; then
             echo "NOTE: terraform wrote to stderr:"
             sed -n '1,200p' /tmp/bootstrap.err || true
           fi
 
-          # Extrai o primeiro objeto JSON balanceado da saída crua
-          python - <<'PY' > /tmp/bootstrap.json 2> /tmp/bootstrap.py.err || true
+          # Extrai o primeiro objeto JSON balanceado
+          python - <<'PY' > /tmp/bootstrap.json \
+            2> /tmp/bootstrap.py.err || true
           import sys, json
           s=open('/tmp/bootstrap.raw','r',errors='replace').read()
           i=s.find('{')
@@ -209,17 +225,24 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -s /tmp/bootstrap.json ]; then
-            echo "ERROR: /tmp/bootstrap.json missing or empty"; ls -l /tmp || true
+            echo "ERROR: /tmp/bootstrap.json missing or empty"
+            ls -l /tmp || true
             exit 1
           fi
 
-          TF_BUCKET=$(jq -r '
-            .state_bucket.value // .state_bucket_name.value //
-            .state_bucket // .state_bucket_name // empty' /tmp/bootstrap.json)
+          FILTER='
+          (.state_bucket.value //
+           .state_bucket_name.value //
+           .state_bucket //
+           .state_bucket_name //
+           empty)
+          '
+
+          TF_BUCKET=$(jq -r "$FILTER" /tmp/bootstrap.json || true)
 
           if [ -z "$TF_BUCKET" ]; then
-            echo "ERROR: could not determine TF_BUCKET from bootstrap outputs."
-            echo "Make sure the bootstrap module defines output 'state_bucket' or 'state_bucket_name'."
+            echo "ERROR: could not determine TF_BUCKET from outputs."
+            echo "Expected 'state_bucket' or 'state_bucket_name' outputs."
             echo "Available keys are:"
             jq -r 'keys[]' /tmp/bootstrap.json || true
             exit 6
@@ -231,13 +254,16 @@ jobs:
       - name: Write backend.hcl for GCP infra
         env:
           TF_BUCKET: ${{ env.TF_BUCKET }}
-          ENV_NAME: ${{ github.event.inputs.environment }}
+          ENV_NAME: >-
+            ${{ github.event.inputs.environment }}
         run: |
           set -euo pipefail
           mkdir -p infra/terraform/gcp
           env="${ENV_NAME:-prod}"
-          printf 'bucket = "%s"\n' "$TF_BUCKET" > infra/terraform/gcp/backend.hcl
-          printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
+          printf 'bucket = "%s"\n' "$TF_BUCKET" \
+            > infra/terraform/gcp/backend.hcl
+          printf 'prefix = "%s"\n' "env/${env}" \
+            >> infra/terraform/gcp/backend.hcl
           echo "backend.hcl:"
           sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
@@ -245,7 +271,8 @@ jobs:
         working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          terraform init -backend-config=backend.hcl \
+            -reconfigure -input=false
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
@@ -256,7 +283,9 @@ jobs:
       - name: Output results (JSON)
         if: success()
         working-directory: infra/terraform/gcp
-        run: terraform output -json || true
+        run: |
+          set -euo pipefail
+          terraform output -json || true
 
       - name: Done
         run: echo "Deploy GCP finished."
