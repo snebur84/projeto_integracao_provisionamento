@@ -20,9 +20,3 @@ output "provision_service_name" {
   description = "Nome do serviço web (Django) correspondente."
   value       = length(render_web_service.provision) > 0 ? render_web_service.provision[0].name : ""
 }
-
-output "postgres_database_url" {
-  description = "Connection string do Postgres gerenciado (sensible)."
-  value       = try(render_postgres.db.connection_string, "")
-  sensitive   = true
-}
