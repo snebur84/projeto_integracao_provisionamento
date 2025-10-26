@@ -139,8 +139,7 @@ jobs:
         working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl \
-            -reconfigure -input=false
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
