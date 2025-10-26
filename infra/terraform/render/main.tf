@@ -1,117 +1,29 @@
-locals {
-  # key of the primary environment we create / use (default "production" - key name in project_environments)
-  env_key = try(keys(var.project_environments)[0], "production")
-  # convenience: the environment name object
-  env_obj = var.project_environments[local.env_key]
+# Exemplo ilustrativo: condicionalmente criar o serviço (ajuste o bloco ao seu módulo/provider)
+resource "render_service" "provision_service" {
+  count = var.create_service ? 1 : 0
+
+  name = var.service_name
+  # outros atributos do serviço web (type, repo, branch, env, build_command, start_command ...)
+  # ...
 }
 
-# Project (requires environments map of objects)
-resource "render_project" "project" {
-  name         = var.project_name
-  environments = var.project_environments
+# Exemplo: criar Postgres no Render (se você optar por criar via TF)
+resource "render_database" "postgres" {
+  count = var.create_postgres ? 1 : 0
+
+  name     = var.postgres_database
+  region   = "oregon" # exemplo
+  plan     = "starter" # ajuste conforme necessidade
+  # se o provider/module permitir, exponha a connection string em um output
 }
 
-# PRIVATE SERVICE: MySQL (image-backed private service)
-resource "render_private_service" "mysql" {
-  name  = var.mysql_service_name
-  plan  = var.mysql_plan
-  region = var.region
-
-  # runtime_source using image (image_url must NOT include tag/digest)
-  runtime_source = {
-    image = {
-      image_url = "docker.io/library/mysql"
-      tag       = "8.0"
-    }
-  }
-
-  # attach a disk if supported
-  disk = {
-    name       = "${var.mysql_service_name}-disk"
-    size_gb    = var.mysql_disk_size_gb
-    mount_path = "/var/lib/mysql"
-  }
-
-  # env_vars is a map of objects { value = "..." } per schema
-  env_vars = {
-    MYSQL_ROOT_PASSWORD = { value = var.mysql_root_password }
-    MYSQL_DATABASE      = { value = var.mysql_database }
-    MYSQL_USER          = { value = var.mysql_user }
-    MYSQL_PASSWORD      = { value = var.mysql_password }
-    MYSQL_PORT          = { value = var.mysql_port }
-  }
-
-  environment_id = render_project.project.environments[local.env_key].id
+# Outputs: exponha id do serviço e conexão do Postgres (nome das saídas depende dos recursos usados)
+output "provision_service_id" {
+  value       = length(render_service.provision_service) > 0 ? render_service.provision_service[0].id : ""
+  description = "ID do serviço Render para a aplicação provision (vazia se serviço não criado por este TF run)"
 }
 
-# PRIVATE SERVICE: MongoDB (image-backed)
-resource "render_private_service" "mongo" {
-  name   = var.mongodb_service_name
-  plan   = var.mongodb_plan
-  region = var.region
-
-  runtime_source = {
-    image = {
-      image_url = "docker.io/library/mongo"
-      tag       = "6.0"
-    }
-  }
-
-  disk = {
-    name       = "${var.mongodb_service_name}-disk"
-    size_gb    = var.mongodb_disk_size_gb
-    mount_path = "/data/db"
-  }
-
-  env_vars = {
-    MONGO_INITDB_ROOT_USERNAME = { value = var.mongodb_root_username }
-    MONGO_INITDB_ROOT_PASSWORD = { value = var.mongodb_root_password }
-    MONGO_INITDB_DATABASE      = { value = var.mongodb_database }
-    MONGODB_PORT               = { value = var.mongodb_port }
-  }
-
-  environment_id = render_project.project.environments[local.env_key].id
-}
-
-# WEB SERVICE: Django app (build from repo using Dockerfile)
-resource "render_web_service" "app" {
-  name   = var.app_service_name
-  plan   = var.app_plan
-  region = var.region
-
-  runtime_source = {
-    docker = {
-      repo_url        = var.app_repo
-      branch          = var.app_branch
-      dockerfile_path = var.dockerfile_path
-      context         = var.docker_context
-      auto_deploy     = var.app_auto_deploy
-    }
-  }
-
-  # override start command (escaped $${PORT:-8000} so Terraform doesn't interpolate)
-  start_command = "gunicorn provision.wsgi:application --bind 0.0.0.0:$${PORT:-8000} --workers 3"
-
-  # environment for the web app. Use service URLs from private services as host values.
-  env_vars = {
-    DJANGO_SECRET_KEY         = { value = var.django_secret_key }
-    DJANGO_DEBUG              = { value = var.django_debug }
-    DJANGO_ALLOWED_HOSTS      = { value = var.django_allowed_hosts }
-    DJANGO_SUPERUSER_USERNAME = { value = var.django_superuser_username }
-    DJANGO_SUPERUSER_EMAIL    = { value = var.django_superuser_email }
-    DJANGO_SUPERUSER_PASSWORD = { value = var.django_superuser_password }
-
-    MYSQL_HOST     = { value = try(render_private_service.mysql.url, "") }
-    MYSQL_PORT     = { value = var.mysql_port }
-    MYSQL_DATABASE = { value = var.mysql_database }
-    MYSQL_USER     = { value = var.mysql_user }
-    MYSQL_PASSWORD = { value = var.mysql_password }
-
-    MONGODB_HOST = { value = try(render_private_service.mongo.url, "") }
-    MONGODB_PORT = { value = var.mongodb_port }
-
-    PROVISION_API_KEY = { value = var.provision_api_key }
-  }
-
-  environment_id = render_project.project.environments[local.env_key].id
+output "postgres_database_url" {
+  value       = length(render_database.postgres) > 0 ? render_database.postgres[0].connection_string : ""
+  description = "Connection string para o Postgres criado (se aplicável)"
 }
