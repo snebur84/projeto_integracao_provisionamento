@@ -51,15 +51,17 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT }}
 
       - name: Validate SA and Storage perms
+        # <-- IMPORTANT: expose the secret into this step as an env var so shell can read it
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
           set -euo pipefail
+          # write the key to a temp file with restricted perms
           printf '%s' "$GCP_SA_KEY" > /tmp/gcp_key.json
           chmod 600 /tmp/gcp_key.json
 
-          CLIENT_EMAIL=$(jq -r '.client_email // empty' \
-            /tmp/gcp_key.json || true)
+          CLIENT_EMAIL=$(jq -r '.client_email // empty' /tmp/gcp_key.json || true)
           if [ -z "$CLIENT_EMAIL" ]; then
             echo "ERROR: key missing client_email or is invalid"
             rm -f /tmp/gcp_key.json
@@ -67,8 +69,8 @@ jobs:
           fi
           echo "Service account: $CLIENT_EMAIL"
 
-          gcloud auth activate-service-account \
-            --key-file=/tmp/gcp_key.json --project="$GCP_PROJECT"
+          # explicit activation (double-check)
+          gcloud auth activate-service-account --key-file=/tmp/gcp_key.json --project="$GCP_PROJECT"
 
           echo "gcloud auth list:"
           gcloud auth list
@@ -76,15 +78,11 @@ jobs:
           echo "Project:"
           gcloud config get-value project || true
 
-          if gcloud services list --enabled \
-            --project="$GCP_PROJECT" \
-            --filter="NAME:storage.googleapis.com" \
-            --format="value(NAME)" | grep -q storage.googleapis.com; then
+          if gcloud services list --enabled --project="$GCP_PROJECT" --filter="NAME:storage.googleapis.com" --format="value(NAME)" | grep -q storage.googleapis.com; then
             echo "Cloud Storage API is enabled"
           else
             echo "Cloud Storage API not enabled; attempting to enable"
-            gcloud services enable storage.googleapis.com \
-              --project="$GCP_PROJECT" || true
+            gcloud services enable storage.googleapis.com --project="$GCP_PROJECT" || true
           fi
 
           if gsutil ls -p "$GCP_PROJECT" >/dev/null 2>&1; then
@@ -92,9 +90,7 @@ jobs:
           else
             echo "Warning: gsutil could not list buckets."
             echo "Checking IAM bindings for the SA (may fail)"
-            gcloud projects get-iam-policy "$GCP_PROJECT" \
-              --format=json | jq -r --arg sa "serviceAccount:$CLIENT_EMAIL" \
-              '.bindings[] | select(.members[]? == $sa) | .role' || true
+            gcloud projects get-iam-policy "$GCP_PROJECT" --format=json | jq -r --arg sa "serviceAccount:$CLIENT_EMAIL" '.bindings[] | select(.members[]? == $sa) | .role' || true
           fi
 
           rm -f /tmp/gcp_key.json
@@ -117,10 +113,7 @@ jobs:
           region="${GCP_REGION:-us-central1}"
 
           bucket="${project}-tfstate-${env}"
-          bucket=$(printf '%s' "$bucket" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9-]/-/g' \
-            | cut -c1-63)
+          bucket=$(printf '%s' "$bucket" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-63)
 
           printf 'project = "%s"\n' "$project" > terraform.tfvars
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
@@ -164,8 +157,7 @@ jobs:
             exit 5
           fi
 
-          TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value \
-            // .state_bucket // .state_bucket_name // empty)' "$BOOT")
+          TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' "$BOOT")
 
           if [ -z "$TF_BUCKET" ]; then
             echo "ERROR: bucket name not found in outputs."
@@ -185,18 +177,15 @@ jobs:
           set -euo pipefail
           mkdir -p infra/terraform/gcp
           env="${ENV_NAME:-prod}"
-          printf 'bucket = "%s"\n' "$TF_BUCKET" > \
-            infra/terraform/gcp/backend.hcl
-          printf 'prefix = "%s"\n' "env/${env}" >> \
-            infra/terraform/gcp/backend.hcl
+          printf 'bucket = "%s"\n' "$TF_BUCKET" > infra/terraform/gcp/backend.hcl
+          printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
           sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
       - name: Terraform init (gcp infra)
         working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl \
-            -reconfigure -input=false
+          terraform init -backend-config=backend.hcl -reconfigure -input=false
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
