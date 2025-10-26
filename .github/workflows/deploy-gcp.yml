@@ -1,4 +1,4 @@
-name: Deploy - GCP
+name: Deploy GCP Infrastructure
 
 on:
   workflow_dispatch:
