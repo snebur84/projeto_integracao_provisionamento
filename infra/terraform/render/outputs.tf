@@ -1,39 +1,32 @@
+# infra/terraform/render/outputs.tf
+# Saídas úteis para o workflow: ids de projeto/serviços criados (vazias caso o recurso não tenha sido criado por este run).
+
 output "project_id" {
+  description = "ID do projeto Render criado/gerenciado por este módulo (vazio se não criado aqui)."
   value       = try(render_project.project.id, "")
-  description = "Render project id"
 }
 
 output "project_environments" {
+  description = "Map de environments do projeto (vazio se não criado aqui)."
   value       = try(render_project.project.environments, {})
-  description = "Map of created environments on the project"
 }
 
-output "mysql_service_id" {
-  value       = try(render_private_service.mysql.id, "")
-  description = "ID of the MySQL private service"
+output "provision_service_id" {
+  description = "ID do serviço web (Django) criado (vazio se var.create_service=false ou se não criado por este run)."
+  value       = length(render_web_service.provision) > 0 ? render_web_service.provision[0].id : ""
 }
 
-output "mysql_service_url" {
-  value       = try(render_private_service.mysql.url, "")
-  description = "URL (internal/external) for the MySQL service"
+output "provision_service_name" {
+  description = "Nome do serviço web (Django) correspondente."
+  value       = length(render_web_service.provision) > 0 ? render_web_service.provision[0].name : ""
 }
 
-output "mongo_service_id" {
-  value       = try(render_private_service.mongo.id, "")
-  description = "ID of the MongoDB private service"
+output "postgres_private_service_id" {
+  description = "ID do serviço privado que executa Postgres (vazio se var.create_postgres=false ou não criado por este run)."
+  value       = length(render_private_service.postgres) > 0 ? render_private_service.postgres[0].id : ""
 }
 
-output "mongo_service_url" {
-  value       = try(render_private_service.mongo.url, "")
-  description = "URL for the MongoDB service"
-}
-
-output "app_service_id" {
-  value       = try(render_web_service.app.id, "")
-  description = "ID of the web service"
-}
-
-output "app_public_url" {
-  value       = try(render_web_service.app.url, "")
-  description = "Public URL of the web app (empty until assigned)"
+output "postgres_private_service_name" {
+  description = "Nome do serviço privado Postgres (quando criado via terraform)."
+  value       = length(render_private_service.postgres) > 0 ? render_private_service.postgres[0].name : ""
 }

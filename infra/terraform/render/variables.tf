@@ -1,15 +1,25 @@
-variable "service_name" {
-  type    = string
-  default = "provision" # ajuste para o nome real do serviço no Render
+variable "render_api_key" {
+  type        = string
+  description = "Render API key. Pass via TF_VAR_render_api_key (GitHub Actions) or set TF var locally."
+  sensitive   = true
 }
 
-# Controle condicional: quando false, o Terraform não criará o recurso de serviço (útil quando o serviço já existe)
+variable "render_owner_id" {
+  type        = string
+  description = "Owner ID (usr-... or tea-...). Optional; provider reads RENDER_OWNER_ID env if set."
+  default     = ""
+}
+
+variable "service_name" {
+  type    = string
+  default = "provision_app"
+}
+
 variable "create_service" {
   type    = bool
   default = true
 }
 
-# Variáveis para Postgres (se seu TF criar a DB no Render)
 variable "create_postgres" {
   type    = bool
   default = true
