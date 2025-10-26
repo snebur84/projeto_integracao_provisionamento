@@ -34,15 +34,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: List bootstrap directory (debug)
+      - name: List bootstrap dir (debug)
         run: |
-          echo "Listing infra/terraform/bootstrap/gcp (if present)"
+          echo "Listing infra/terraform/bootstrap/gcp"
           ls -la infra/terraform/bootstrap/gcp || true
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v1
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud and validate creds
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ secrets.GCP_PROJECT }}
+
+      - name: Validate SA and Storage perms
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GCP_SA_KEY" > /tmp/gcp_key.json
+          chmod 600 /tmp/gcp_key.json
+
+          CLIENT_EMAIL=$(jq -r '.client_email // empty' \
+            /tmp/gcp_key.json || true)
+          if [ -z "$CLIENT_EMAIL" ]; then
+            echo "ERROR: key missing client_email or is invalid"
+            rm -f /tmp/gcp_key.json
+            exit 1
+          fi
+          echo "Service account: $CLIENT_EMAIL"
+
+          gcloud auth activate-service-account \
+            --key-file=/tmp/gcp_key.json --project="$GCP_PROJECT"
+
+          echo "gcloud auth list:"
+          gcloud auth list
+
+          echo "Project:"
+          gcloud config get-value project || true
+
+          if gcloud services list --enabled \
+            --project="$GCP_PROJECT" \
+            --filter="NAME:storage.googleapis.com" \
+            --format="value(NAME)" | grep -q storage.googleapis.com; then
+            echo "Cloud Storage API is enabled"
+          else
+            echo "Cloud Storage API not enabled; attempting to enable"
+            gcloud services enable storage.googleapis.com \
+              --project="$GCP_PROJECT" || true
+          fi
+
+          if gsutil ls -p "$GCP_PROJECT" >/dev/null 2>&1; then
+            echo "gsutil access OK"
+          else
+            echo "Warning: gsutil could not list buckets."
+            echo "Checking IAM bindings for the SA (may fail)"
+            gcloud projects get-iam-policy "$GCP_PROJECT" \
+              --format=json | jq -r --arg sa "serviceAccount:$CLIENT_EMAIL" \
+              '.bindings[] | select(.members[]? == $sa) | .role' || true
+          fi
+
+          rm -f /tmp/gcp_key.json
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -57,19 +112,15 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         run: |
           set -euo pipefail
-
-          # values
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
 
-          # build a valid GCS bucket name: lowercase, replace invalid chars, keep reasonable length
-          # example: <project>-tfstate-<env>
           bucket="${project}-tfstate-${env}"
-          # sanitize: lowercase and replace any non alnum or '-' with '-'
-          bucket="$(echo "$bucket" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
-          # ensure bucket name length <= 63
-          bucket="$(echo "$bucket" | cut -c1-63)"
+          bucket=$(printf '%s' "$bucket" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g' \
+            | cut -c1-63)
 
           printf 'project = "%s"\n' "$project" > terraform.tfvars
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
@@ -94,47 +145,37 @@ jobs:
 
       - name: Export bootstrap outputs as env
         working-directory: infra/terraform/bootstrap/gcp
-        id: bootstrap
         run: |
           set -euo pipefail
-
-          BOOT="/tmp/bootstrap.json"
-
-          # Verifica existência e conteúdo
-          if [ ! -f "${BOOT}" ]; then
-            echo "ERROR: ${BOOT} not found. Previous step 'terraform output -json' may have failed."
+          BOOT=/tmp/bootstrap.json
+          if [ ! -f "$BOOT" ]; then
+            echo "ERROR: $BOOT not found. 'terraform output' may have failed."
             ls -la /tmp || true
             exit 5
           fi
-
-          if [ ! -s "${BOOT}" ]; then
-            echo "ERROR: ${BOOT} is empty."
-            echo "Contents (if any):"
-            sed -n '1,200p' "${BOOT}" || true
+          if [ ! -s "$BOOT" ]; then
+            echo "ERROR: $BOOT is empty."
+            sed -n '1,200p' "$BOOT" || true
+            exit 5
+          fi
+          if ! jq -e . "$BOOT" >/dev/null 2>&1; then
+            echo "ERROR: $BOOT is not valid JSON. Dumping contents:"
+            sed -n '1,200p' "$BOOT" || true
             exit 5
           fi
 
-          # Valida JSON
-          if ! jq -e . "${BOOT}" >/dev/null 2>&1; then
-            echo "ERROR: ${BOOT} is not valid JSON. Dumping contents for debug:"
-            sed -n '1,200p' "${BOOT}" || true
-            exit 5
-          fi
+          TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value \
+            // .state_bucket // .state_bucket_name // empty)' "$BOOT")
 
-          # Tenta extrair o nome do bucket a partir de várias formas possíveis de outputs
-          TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // .state_bucket_name_value // empty)' "${BOOT}")
-
-          if [ -z "${TF_BUCKET}" ]; then
-            echo "ERROR: Não foi possível encontrar o nome do bucket nos outputs."
-            echo "Chaves presentes no JSON:"
-            jq -r 'keys[]' "${BOOT}" || true
-            echo "Conteúdo completo para debug:"
-            sed -n '1,400p' "${BOOT}" || true
+          if [ -z "$TF_BUCKET" ]; then
+            echo "ERROR: bucket name not found in outputs."
+            jq -r 'keys[]' "$BOOT" || true
+            sed -n '1,400p' "$BOOT" || true
             exit 6
           fi
 
-          echo "TF_BUCKET=${TF_BUCKET}" >> $GITHUB_ENV
-          echo "Exported TF_BUCKET=${TF_BUCKET}"
+          echo "TF_BUCKET=$TF_BUCKET" >> $GITHUB_ENV
+          echo "Exported TF_BUCKET=$TF_BUCKET"
 
       - name: Write backend.hcl for GCP infra
         env:
@@ -144,17 +185,18 @@ jobs:
           set -euo pipefail
           mkdir -p infra/terraform/gcp
           env="${ENV_NAME:-prod}"
-          printf 'bucket = "%s"\n' "$TF_BUCKET" \
-            > infra/terraform/gcp/backend.hcl
-          printf 'prefix = "%s"\n' "env/${env}" \
-            >> infra/terraform/gcp/backend.hcl
+          printf 'bucket = "%s"\n' "$TF_BUCKET" > \
+            infra/terraform/gcp/backend.hcl
+          printf 'prefix = "%s"\n' "env/${env}" >> \
+            infra/terraform/gcp/backend.hcl
           sed -n '1,120p' infra/terraform/gcp/backend.hcl
 
       - name: Terraform init (gcp infra)
         working-directory: infra/terraform/gcp
         run: |
           set -euo pipefail
-          terraform init -backend-config=backend.hcl -reconfigure -input=false
+          terraform init -backend-config=backend.hcl \
+            -reconfigure -input=false
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
