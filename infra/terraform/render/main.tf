@@ -21,20 +21,17 @@ resource "render_project" "project" {
 # substituir a definição do Postgres privado por um recurso de banco gerenciado
 # (o nome do recurso pode variar conforme versão do provider; aqui uso render_database como exemplo)
 
-resource "render_database" "postgres" {
+resource "render_postgres" "db" {
   count = var.create_postgres ? 1 : 0
 
   name         = "${local.sanitized_name}-db"
-  plan         = var.postgres_plan      # setar "free" via var
+  plan         = var.postgres_plan 
   region       = var.region
+  version      = "17"
 
-  # campos que o provider pode exigir para managed DB:
   database_name = var.postgres_database
   user          = var.postgres_user
   password      = var.postgres_password
-
-  # se o provider requerer environment/project link:
-  environment_id = render_project.project.environments["production"].id
 }
 
 # Serviço web para a aplicação Django (build via Dockerfile no repositório)
