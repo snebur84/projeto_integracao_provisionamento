@@ -9,7 +9,7 @@ on:
         required: true
         default: prod
       bootstrap:
-        description: 'Run bootstrap apply (creates resources via terraform bootstrap)'
+        description: 'Run bootstrap apply (creates bootstrap resources)'
         required: false
         default: 'false'
 
@@ -35,7 +35,7 @@ jobs:
           service_account_key: ${{ secrets.GCP_SA_KEY }}
           project_id: ${{ secrets.GCP_PROJECT }}
 
-      - name: Validate required GCP values
+      - name: Validate required GCP inputs
         run: |
           set -euo pipefail
           if [ -z "${{ secrets.GCP_PROJECT }}" ]; then
@@ -48,7 +48,7 @@ jobs:
         with:
           terraform_version: '1.5.7'
 
-      - name: Optionally run bootstrap (terraform) to create other resources
+      - name: Optional: run bootstrap apply (only if requested)
         if: ${{ github.event.inputs.bootstrap == 'true' }}
         working-directory: infra/terraform/bootstrap/gcp
         env:
@@ -58,7 +58,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # write deterministic tfvars for bootstrap (same naming logic as below)
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
@@ -77,7 +76,7 @@ jobs:
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      - name: Ensure GCS backend bucket exists and export TF_BUCKET
+      - name: Ensure GCS backend bucket exists and export TF_BUCKET (idempotent)
         working-directory: infra/terraform/bootstrap/gcp
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
@@ -90,31 +89,30 @@ jobs:
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
 
-          # deterministic bucket name (same logic used in bootstrap)
+          # deterministic bucket name (same logic used by bootstrap)
           bucket="${project}-tfstate-${env}"
           bucket=$(printf '%s' "$bucket" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | cut -c1-63)
 
-          echo "Computed bucket name: ${bucket}"
+          echo "Using bucket name: ${bucket}"
 
-          # Check if bucket exists. gsutil ls -b returns 0 if it exists.
+          # If bucket exists (any project), gsutil ls -b will succeed.
           if gsutil ls -b "gs://${bucket}" >/dev/null 2>&1; then
             echo "Bucket gs://${bucket} already exists"
           else
-            echo "Bucket gs://${bucket} not found; attempting to create"
-            # create bucket with project & location
+            echo "Bucket gs://${bucket} not found; attempting to create in project ${project}"
             if gsutil mb -p "${project}" -l "${region}" "gs://${bucket}"; then
               echo "Created bucket gs://${bucket}"
             else
               echo "ERROR: Failed to create gs://${bucket}"
-              echo "Ensure the SA has storage.buckets.create permission"
+              echo "Ensure the service account has storage.buckets.create permission"
               exit 1
             fi
           fi
 
-          # Export TF_BUCKET for downstream steps
+          # Export TF_BUCKET for downstream steps (just the bucket name)
           echo "TF_BUCKET=${bucket}" >> $GITHUB_ENV
           echo "Exported TF_BUCKET=${bucket}"
 
@@ -125,11 +123,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "${TF_BUCKET:-}" ]; then
+            echo "ERROR: TF_BUCKET not set"
+            exit 1
+          fi
+
           mkdir -p infra/terraform/gcp
           env="${ENV_NAME:-prod}"
           printf 'bucket = "%s"\n' "${TF_BUCKET}" > infra/terraform/gcp/backend.hcl
           printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
-          echo "Wrote infra backend.hcl (preview):"
+          echo "Wrote infra backend.hcl:"
           sed -n '1,120p' infra/terraform/gcp/backend.hcl || true
 
       - name: Terraform init (gcp infra)
