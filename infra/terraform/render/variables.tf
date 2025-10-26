@@ -1,6 +1,7 @@
 variable "service_name" {
   type    = string
-  default = "provision_app"
+  # Ajustado para usar hífen por padrão (underscores podem ser rejeitados pelo provider)
+  default = "provision-app"
 }
 
 variable "create_service" {
