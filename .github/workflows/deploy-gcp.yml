@@ -121,6 +121,44 @@ jobs:
 
           echo "Wrote terraform.tfvars:"
           sed -n '1,120p' terraform.tfvars
+      
+      - name: Import existing state bucket if present
+        working-directory: infra/terraform/bootstrap/gcp
+        run: |
+          set -euo pipefail
+
+          # Extrai state_bucket_name do terraform.tfvars
+          if [ ! -f terraform.tfvars ]; then
+            echo "terraform.tfvars not found; aborting import check"
+            exit 0
+          fi
+
+          BUCKET=$(awk -F'"' '/state_bucket_name/ {print $2; exit}' terraform.tfvars || true)
+          if [ -z "$BUCKET" ]; then
+            echo "state_bucket_name not found in terraform.tfvars; aborting import check"
+            exit 0
+          fi
+
+          echo "Checking if bucket gs://$BUCKET exists..."
+          if gsutil ls -b "gs://$BUCKET" >/dev/null 2>&1; then
+            echo "Bucket gs://$BUCKET exists — importing into Terraform state if not already imported."
+
+            # Inicializa o provider/local state do terraform. Se já inicializado, ok.
+            terraform init -input=false
+
+            # Tenta importar (não falhará o pipeline se já importado)
+            if terraform state list | grep -q '^google_storage_bucket\.terraform_state$'; then
+              echo "Resource google_storage_bucket.terraform_state already in state — skipping import."
+            else
+              terraform import -lock=false 'google_storage_bucket.terraform_state' "$BUCKET" || {
+                echo "terraform import failed; show state and exit with error"
+                terraform state list || true
+                exit 1
+              }
+            fi
+          else
+            echo "Bucket gs://$BUCKET does not exist — Terraform will create it."
+          fi
 
       - name: Bootstrap - init and apply
         working-directory: infra/terraform/bootstrap/gcp
