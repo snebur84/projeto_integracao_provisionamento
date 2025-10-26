@@ -23,6 +23,6 @@ output "provision_service_name" {
 
 output "postgres_database_url" {
   description = "Connection string do Postgres gerenciado (sensible)."
-  value       = try(render_database.postgres[0].connection_string, "")
+  value       = try(render_postgres.db.connection_string, "")
   sensitive   = true
 }

@@ -30,7 +30,7 @@ resource "render_postgres" "db" {
   version      = "17"
 
   database_name = var.postgres_database
-  user          = var.postgres_user
+  database_user = var.postgres_user
 }
 
 # Serviço web para a aplicação Django (build via Dockerfile no repositório)
