@@ -1,5 +1,5 @@
 ---
-name: Deploy GCP Infrastructure
+name: Deploy - GCP
 
 on:
   workflow_dispatch:
@@ -28,94 +28,50 @@ jobs:
   deploy:
     name: Deploy to GCP
     runs-on: ubuntu-latest
-
-    # Expose repo Variables (vars) and Secrets (secrets) as environment.
-    # We'll resolve precedence (vars then secrets) in the next step.
     env:
       TF_IN_AUTOMATION: "true"
-
-      # Identity via WIF (prefer Variables, fallback to Secrets)
-      GCP_WIF_PROVIDER_V: ${{ vars.GCP_WIF_PROVIDER }}
-      GCP_SA_EMAIL_V: ${{ vars.GCP_SA_EMAIL }}
-      GCP_WIF_PROVIDER_S: ${{ secrets.GCP_WIF_PROVIDER }}
-      GCP_SA_EMAIL_S: ${{ secrets.GCP_SA_EMAIL }}
-      GCP_SA_KEY_S: ${{ secrets.GCP_SA_KEY }}
-
-      # Project/region (prefer Variables, fallback to Secrets)
-      GCP_PROJECT_V: ${{ vars.GCP_PROJECT }}
-      GCP_REGION_V: ${{ vars.GCP_REGION }}
-      GCP_PROJECT_S: ${{ secrets.GCP_PROJECT }}
-      GCP_REGION_S: ${{ secrets.GCP_REGION }}
-
-      # Optional pre-created state bucket
-      TF_BUCKET_SECRET: ${{ secrets.TF_BUCKET }}
+      # Use APENAS Variáveis (Settings > Variables) para WIF
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_SA_EMAIL: ${{ vars.GCP_SA_EMAIL }}
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve inputs (prefer vars, fallback to secrets)
+      - name: Validate required vars for WIF
         shell: bash
         run: |
           set -euo pipefail
-
-          # Prefer Variables; fallback to Secrets
-          wif="${GCP_WIF_PROVIDER_V:-}"
-          [ -z "$wif" ] && wif="${GCP_WIF_PROVIDER_S:-}"
-
-          sa_email="${GCP_SA_EMAIL_V:-}"
-          [ -z "$sa_email" ] && sa_email="${GCP_SA_EMAIL_S:-}"
-
-          sa_key="${GCP_SA_KEY_S:-}"
-
-          project="${GCP_PROJECT_V:-}"
-          [ -z "$project" ] && project="${GCP_PROJECT_S:-}"
-
-          region="${GCP_REGION_V:-}"
-          [ -z "$region" ] && region="${GCP_REGION_S:-}"
-          [ -z "$region" ] && region="us-central1"
-
-          {
-            echo "RES_GCP_WIF_PROVIDER=$wif"
-            echo "RES_GCP_SA_EMAIL=$sa_email"
-            echo "RES_GCP_SA_KEY=$sa_key"
-            echo "RES_GCP_PROJECT=$project"
-            echo "RES_GCP_REGION=$region"
-          } >> "$GITHUB_ENV"
-
-          echo "Resolved:"
-          echo " - RES_GCP_WIF_PROVIDER: ${wif:+set}"
-          echo " - RES_GCP_SA_EMAIL:     ${sa_email:+set}"
-          echo " - RES_GCP_SA_KEY:       ${sa_key:+set}"
-          echo " - RES_GCP_PROJECT:      ${project:-<empty>}"
-          echo " - RES_GCP_REGION:       ${region:-<empty>}"
+          err=0
+          [ -z "${GCP_WIF_PROVIDER:-}" ] && err=1
+          [ -z "${GCP_SA_EMAIL:-}" ] && err=1
+          [ -z "${GCP_PROJECT:-}" ] && err=1
+          if [ "$err" -ne 0 ]; then
+            echo "Missing required repository variables:"
+            echo " - GCP_WIF_PROVIDER"
+            echo " - GCP_SA_EMAIL"
+            echo " - GCP_PROJECT"
+            echo "Configure them in Settings > Variables."
+            exit 1
+          fi
+          if [ -z "${GCP_REGION:-}" ]; then
+            echo "GCP_REGION not set. Defaulting to us-central1."
+            echo "GCP_REGION=us-central1" >> "$GITHUB_ENV"
+          fi
 
       - name: Auth via Workload Identity Federation
-        if: >-
-          ${{ env.RES_GCP_WIF_PROVIDER != '' &&
-              env.RES_GCP_SA_EMAIL != '' }}
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: >-
-            ${{ env.RES_GCP_WIF_PROVIDER }}
-          service_account: >-
-            ${{ env.RES_GCP_SA_EMAIL }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SA_EMAIL }}
           token_format: access_token
-
-      - name: Auth via Service Account Key (fallback)
-        if: >-
-          ${{ (env.RES_GCP_WIF_PROVIDER == '' ||
-               env.RES_GCP_SA_EMAIL == '') &&
-              env.RES_GCP_SA_KEY != '' }}
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: >-
-            ${{ env.RES_GCP_SA_KEY }}
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ env.RES_GCP_PROJECT }}
+          project_id: ${{ env.GCP_PROJECT }}
           export_default_credentials: true
 
       - name: Verify gcloud auth
@@ -137,12 +93,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           env_name="${ENV_NAME:-prod}"
-          project="${RES_GCP_PROJECT:?missing GCP project}"
-          region="${RES_GCP_REGION:-us-central1}"
+          project="${GCP_PROJECT}"
+          region="${GCP_REGION}"
 
-          # Bucket name (<= 63 chars; lowercase; safe chars only)
           bucket="${project}-tfstate-${env_name}"
           bucket="$(printf '%s' "$bucket" \
             | tr '[:upper:]' '[:lower:]' \
@@ -158,49 +112,6 @@ jobs:
           echo "Wrote terraform.tfvars:"
           sed -n '1,120p' terraform.tfvars
 
-      - name: Import existing state bucket if present
-        working-directory: infra/terraform/bootstrap/gcp
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f terraform.tfvars ]; then
-            echo "terraform.tfvars not found; skipping import"
-            exit 0
-          fi
-
-          BUCKET="$(
-            awk -F '\"' '/state_bucket_name/ {print $2; exit}' \
-              terraform.tfvars || true
-          )"
-
-          if [ -z "$BUCKET" ]; then
-            echo "state_bucket_name not found; skipping import"
-            exit 0
-          fi
-
-          echo "Checking bucket: gs://$BUCKET"
-          if gsutil ls -b "gs://$BUCKET" >/dev/null 2>&1; then
-            echo "Bucket exists; importing to state if needed."
-            terraform init -input=false
-
-            if terraform state list \
-              | grep -q '^google_storage_bucket\.terraform_state$'
-            then
-              echo "Already in state; skipping import."
-            else
-              terraform import -lock=false \
-                'google_storage_bucket.terraform_state' \
-                "$BUCKET" || {
-                  echo "terraform import failed"
-                  terraform state list || true
-                  exit 1
-                }
-            fi
-          else
-            echo "Bucket does not exist; will be created by Terraform."
-          fi
-
       - name: Bootstrap - init and apply
         working-directory: infra/terraform/bootstrap/gcp
         shell: bash
@@ -209,108 +120,45 @@ jobs:
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      - name: Use TF_BUCKET from secret if provided
+      - name: Determine TF_BUCKET (secret > output > tfvars)
+        working-directory: infra/terraform/bootstrap/gcp
+        env:
+          TF_BUCKET_SECRET: ${{ secrets.TF_BUCKET }}
         shell: bash
         run: |
           set -euo pipefail
+          TF_BUCKET=""
+
           if [ -n "${TF_BUCKET_SECRET:-}" ]; then
-            echo "TF_BUCKET=${TF_BUCKET_SECRET}" >> "$GITHUB_ENV"
-            echo "Using TF_BUCKET from secret; skip parsing outputs."
-          else
-            echo "No TF_BUCKET secret; will parse Terraform outputs."
+            TF_BUCKET="${TF_BUCKET_SECRET}"
+            echo "Using TF_BUCKET from secret."
           fi
-
-      - name: Get bootstrap outputs - save JSON (robust)
-        if: ${{ env.TF_BUCKET == '' }}
-        working-directory: infra/terraform/bootstrap/gcp
-        id: bootstrap
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          terraform output -json > /tmp/bootstrap.raw \
-            2> /tmp/bootstrap.err || true
-
-          if [ -s /tmp/bootstrap.err ]; then
-            echo "NOTE: terraform wrote to stderr:"
-            sed -n '1,200p' /tmp/bootstrap.err || true
-          fi
-
-          # Extract first balanced JSON object from raw text
-          python - <<'PY' > /tmp/bootstrap.json \
-            2> /tmp/bootstrap.py.err || true
-          import sys, json
-          s=open('/tmp/bootstrap.raw','r',errors='replace').read()
-          i=s.find('{')
-          if i==-1:
-              sys.stderr.write('no JSON object start found\n'); sys.exit(2)
-          depth=0
-          end=-1
-          for idx,ch in enumerate(s[i:], start=i):
-              if ch=='{': depth+=1
-              elif ch=='}': depth-=1
-              if depth==0:
-                  end=idx
-                  break
-          if end==-1:
-              sys.stderr.write('no matching closing brace found\n'); sys.exit(3)
-          js=s[i:end+1]
-          try:
-              obj=json.loads(js)
-          except Exception as e:
-              sys.stderr.write('json loads failed: %s\n' % e)
-              sys.exit(4)
-          sys.stdout.write(json.dumps(obj))
-          PY
-
-          if [ -s /tmp/bootstrap.py.err ]; then
-            echo "ERROR: python extraction failed:"
-            sed -n '1,200p' /tmp/bootstrap.py.err || true
-            echo "--- raw terraform output ---"
-            sed -n '1,200p' /tmp/bootstrap.raw || true
-            exit 1
-          fi
-
-          if ! jq '.' /tmp/bootstrap.json >/dev/null 2>&1; then
-            echo "ERROR: jq cannot parse /tmp/bootstrap.json"
-            echo "--- cleaned text ---"
-            sed -n '1,200p' /tmp/bootstrap.json || true
-            exit 1
-          fi
-
-      - name: Export bootstrap outputs as env (robust)
-        if: ${{ env.TF_BUCKET == '' }}
-        working-directory: infra/terraform/bootstrap/gcp
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -s /tmp/bootstrap.json ]; then
-            echo "ERROR: /tmp/bootstrap.json missing or empty"
-            ls -l /tmp || true
-            exit 1
-          fi
-
-          FILTER='
-          (.state_bucket.value //
-           .state_bucket_name.value //
-           .state_bucket //
-           .state_bucket_name //
-           empty)
-          '
-
-          TF_BUCKET="$(jq -r "$FILTER" /tmp/bootstrap.json || true)"
 
           if [ -z "$TF_BUCKET" ]; then
-            echo "ERROR: could not determine TF_BUCKET from outputs."
-            echo "Expected outputs: state_bucket or state_bucket_name."
-            echo "Available keys are:"
-            jq -r 'keys[]' /tmp/bootstrap.json || true
+            TF_BUCKET="$(terraform output -raw state_bucket \
+              2>/dev/null || true)"
+          fi
+          if [ -z "$TF_BUCKET" ]; then
+            TF_BUCKET="$(terraform output -raw state_bucket_name \
+              2>/dev/null || true)"
+          fi
+
+          if [ -z "$TF_BUCKET" ] && [ -f terraform.tfvars ]; then
+            TF_BUCKET="$(
+              awk -F '\"' '/state_bucket_name/ {print $2; exit}' \
+                terraform.tfvars || true
+            )"
+          fi
+
+          if [ -z "$TF_BUCKET" ]; then
+            echo "ERROR: could not determine TF_BUCKET."
+            echo "Provide secret TF_BUCKET or ensure bootstrap"
+            echo "outputs 'state_bucket'/'state_bucket_name'."
             exit 6
           fi
 
-          echo "TF_BUCKET=$TF_BUCKET" >> "$GITHUB_ENV"
-          echo "Exported TF_BUCKET=$TF_BUCKET"
+          echo "TF_BUCKET=${TF_BUCKET}" >> "$GITHUB_ENV"
+          echo "Resolved TF_BUCKET=${TF_BUCKET}"
 
       - name: Write backend.hcl for GCP infra
         env:
