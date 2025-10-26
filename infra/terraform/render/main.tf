@@ -1,7 +1,6 @@
 # infra/terraform/render/main.tf
 # Cria um project, um serviço web (Django) e opcionalmente um serviço privado Postgres
-# Ajuste valores (repo/branch/region/plan) conforme sua conta Render e necessidades.
-# Este arquivo foi adaptado ao schema do provider usado neste repositório (render-oss/render).
+# Adaptado ao provider render-oss/render e ao esquema exigido (image_url, repo_url, branch, plan, env_vars).
 
 # Projeto que agrupa os serviços (ambientes)
 resource "render_project" "project" {
@@ -15,21 +14,21 @@ resource "render_project" "project" {
   }
 }
 
-# Serviço privado que provê Postgres (opcional, criado quando var.create_postgres = true)
+# Serviço privado que provê Postgres (opcional)
 resource "render_private_service" "postgres" {
   count = var.create_postgres ? 1 : 0
 
   name = "${var.service_name}-postgres"
 
-  # runtime_source como objeto (não bloco)
+  # runtime_source como objeto: image requer image_url
   runtime_source = {
     image = {
-      image = "postgres:15-alpine"
+      image_url = var.postgres_image_url
     }
   }
 
-  plan   = "starter"   # ajuste conforme necessidade
-  region = "oregon"    # ajuste conforme sua conta
+  plan   = var.postgres_plan
+  region = var.region
 
   # env_vars: map de objetos { value = ... } (schema do provider)
   env_vars = {
@@ -38,7 +37,7 @@ resource "render_private_service" "postgres" {
     POSTGRES_PASSWORD = { value = var.postgres_password }
   }
 
-  # Conectar ao environment do projeto (use environment_id, não project_id)
+  # Conectar ao environment do projeto
   environment_id = render_project.project.environments["production"].id
 }
 
@@ -48,24 +47,28 @@ resource "render_web_service" "provision" {
 
   name = var.service_name
 
-  # runtime_source como objeto (docker)
+  # runtime_source como objeto (docker) — requer repo_url e branch
   runtime_source = {
     docker = {
-      dockerfile_path = "Dockerfile"
+      repo_url        = var.repo_url
+      branch          = var.repo_branch
+      dockerfile_path = var.dockerfile_path
     }
   }
 
-  # start command
-  start_command = "gunicorn provision.wsgi:application --bind 0.0.0.0:$PORT"
+  plan = var.web_plan
+  region = var.region
 
-  # região do serviço
-  region = "oregon"
+  start_command = var.start_command
 
-  # env_vars: DJANGO_SETTINGS_MODULE será sobrescrito pelo workflow CI
   env_vars = {
     DJANGO_SETTINGS_MODULE = { value = "provision.settings_render" }
+    # outros env vars mínimos podem ser adicionados aqui como placeholders
   }
 
-  # Ligar ao environment do project
   environment_id = render_project.project.environments["production"].id
 }
+
+# Observação:
+# - Preencha/ajuste var.* (repo_url, branch, plans, region) via terraform.tfvars, TF_VAR_* no CI ou defaults abaixo.
+# - O workflow do GitHub Actions deve passar TF_VAR_repo_url e TF_VAR_repo_branch se desejar controlar o source via CI.
