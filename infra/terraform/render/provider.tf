@@ -5,8 +5,8 @@ terraform {
     # Se o provider no seu código atual for outro (ex.: "render-oss/render"), verifique a documentação
     # desse provider e ajuste os tipos de recurso conforme o provider escolhido.
     render = {
-      source  = "render/render"
-      version = ">= 0.4.0"
+      source  = "render-oss/render"
+      version = ">= 0.6.0"
     }
   }
 
