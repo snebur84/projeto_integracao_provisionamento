@@ -51,29 +51,22 @@ jobs:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
           set -euo pipefail
-
           printf '%s' "$GCP_SA_KEY" > /tmp/gcp_key.json
           chmod 600 /tmp/gcp_key.json
-
           CLIENT_EMAIL=$(jq -r '.client_email // empty' /tmp/gcp_key.json || true)
           if [ -z "$CLIENT_EMAIL" ]; then
             echo "ERROR: invalid service account key"
             rm -f /tmp/gcp_key.json
             exit 1
           fi
-
           echo "Service account: $CLIENT_EMAIL"
-
           gcloud auth activate-service-account \
             --key-file=/tmp/gcp_key.json \
             --project="$GCP_PROJECT"
-
           echo "gcloud auth list:"
           gcloud auth list
-
           echo "gcloud project config:"
           gcloud config get-value project || true
-
           if gcloud services list --enabled \
              --project="$GCP_PROJECT" \
              --filter="NAME:storage.googleapis.com" \
@@ -84,7 +77,6 @@ jobs:
             gcloud services enable storage.googleapis.com \
               --project="$GCP_PROJECT" || true
           fi
-
           if gsutil ls -p "$GCP_PROJECT" >/dev/null 2>&1; then
             echo "gsutil access OK"
           else
@@ -93,7 +85,6 @@ jobs:
               --format=json | jq -r --arg sa "serviceAccount:$CLIENT_EMAIL" \
               '.bindings[] | select(.members[]? == $sa) | .role' || true
           fi
-
           rm -f /tmp/gcp_key.json
 
       - name: Setup Terraform
@@ -112,17 +103,14 @@ jobs:
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
-
           bucket="${project}-tfstate-${env}"
           bucket=$(printf '%s' "$bucket" \
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g' \
             | cut -c1-63)
-
           printf 'project = "%s"\n' "$project" > terraform.tfvars
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
           printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars
-
           echo "Wrote terraform.tfvars:"
           sed -n '1,120p' terraform.tfvars
 
@@ -130,24 +118,20 @@ jobs:
         working-directory: infra/terraform/bootstrap/gcp
         run: |
           set -euo pipefail
-
           if [ ! -f terraform.tfvars ]; then
             echo "terraform.tfvars not found; skip import"
             exit 0
           fi
-
           BUCKET=$(awk -F'"' '/state_bucket_name/ {print $2; exit}' \
             terraform.tfvars || true)
           if [ -z "$BUCKET" ]; then
             echo "state_bucket_name not found; skip import"
             exit 0
           fi
-
           echo "Checking bucket gs://$BUCKET..."
           if gsutil ls -b "gs://$BUCKET" >/dev/null 2>&1; then
             echo "Bucket exists — import to Terraform state if needed"
             terraform init -input=false
-
             if terraform state list | grep -q \
                '^google_storage_bucket\.terraform_state$'; then
               echo "Already in state; skip import"
@@ -172,10 +156,11 @@ jobs:
 
       - name: Get bootstrap outputs and export TF_BUCKET
         working-directory: infra/terraform/bootstrap/gcp
+        env:
+          TF_BUCKET_SECRET: ${{ secrets.TF_BUCKET }}
         run: |
           set -euo pipefail
           TF_BUCKET=""
-
           if terraform output -help 2>/dev/null | grep -q '\-raw'; then
             TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
             if [ -z "$TF_BUCKET" ]; then
@@ -183,11 +168,9 @@ jobs:
                 2>/dev/null || true)
             fi
           fi
-
           if [ -z "$TF_BUCKET" ]; then
             terraform output -json -no-color > /tmp/tf_out.raw \
               2>/tmp/tf_out.err || true
-
             printf '%s\n' \
               "import sys" \
               "s = sys.stdin.read()" \
@@ -197,30 +180,37 @@ jobs:
               "    sys.exit(2)" \
               "print(s[start:end+1])" \
               > /tmp/extract_json.py
-
             python3 /tmp/extract_json.py < /tmp/tf_out.raw \
               > /tmp/tf_out.json 2>/tmp/tf_extract.err || true
-
             if jq -e . /tmp/tf_out.json >/dev/null 2>&1; then
               TF_BUCKET=$(jq -r \
                 '(.state_bucket.value // .state_bucket_name.value \
                   // .state_bucket // .state_bucket_name // empty)' \
                 /tmp/tf_out.json || true)
             else
-              echo "ERROR: terraform output invalid. Stderr:"
+              echo "terraform output -json did not yield valid JSON;"
+              echo "will try repository secret TF_BUCKET as fallback"
               sed -n '1,200p' /tmp/tf_out.err || true
             fi
-
             rm -f /tmp/tf_out.raw /tmp/tf_out.err /tmp/tf_out.json \
               /tmp/tf_extract.err /tmp/extract_json.py || true
           fi
-
+          if [ -z "$TF_BUCKET" ] && [ -n "${TF_BUCKET_SECRET:-}" ]; then
+            echo "Using repository secret TF_BUCKET as fallback."
+            TF_BUCKET="$TF_BUCKET_SECRET"
+            if gsutil ls -b "gs://$TF_BUCKET" >/dev/null 2>&1; then
+              echo "Verified: gs://$TF_BUCKET exists."
+            else
+              echo "ERROR: TF_BUCKET from secret not accessible: gs://$TF_BUCKET"
+              echo "Ensure the secret is a valid bucket name and SA has access."
+              exit 7
+            fi
+          fi
           if [ -z "$TF_BUCKET" ]; then
-            echo "ERROR: could not determine TF_BUCKET from outputs."
-            echo "Ensure bootstrap outputs 'state_bucket' or 'state_bucket_name'."
+            echo "ERROR: could not determine TF_BUCKET from outputs"
+            echo "and no valid TF_BUCKET secret available."
             exit 6
           fi
-
           echo "TF_BUCKET=$TF_BUCKET" >> $GITHUB_ENV
           echo "Exported TF_BUCKET=$TF_BUCKET"
 
