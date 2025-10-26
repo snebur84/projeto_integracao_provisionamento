@@ -11,7 +11,7 @@ resource "render_project" "project" {
   environments = {
     production = {
       name = "production"
-      protected_status = false
+      protected_status = "unprotected"
     }
   }
 }
