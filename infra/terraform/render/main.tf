@@ -22,7 +22,6 @@ resource "render_project" "project" {
 # (o nome do recurso pode variar conforme versão do provider; aqui uso render_database como exemplo)
 
 resource "render_postgres" "db" {
-  count = var.create_postgres ? 1 : 0
 
   name         = "${local.sanitized_name}-db"
   plan         = var.postgres_plan 
