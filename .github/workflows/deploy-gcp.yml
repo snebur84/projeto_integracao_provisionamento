@@ -17,7 +17,7 @@ jobs:
   deploy-gcp:
     runs-on: ubuntu-latest
     env:
-      TF_IN_AUTOMATION: true
+      TF_IN_AUTOMATION: 'true'
 
     steps:
       - name: Checkout repo
@@ -33,10 +33,9 @@ jobs:
         uses: google-github-actions/setup-gcloud@v1
         with:
           project_id: ${{ secrets.GCP_PROJECT }}
-          # optional: install components if you need them
           install_components: gsutil
 
-      - name: Validate required inputs
+      - name: Validate required GCP inputs
         run: |
           set -euo pipefail
           if [ -z "${{ secrets.GCP_PROJECT }}" ]; then
