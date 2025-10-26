@@ -45,12 +45,6 @@ variable "postgres_image_tag" {
   default = "15-alpine"
 }
 
-# Planos/tiers utilizados
-variable "postgres_plan" {
-  type    = string
-  default = "starter"
-}
-
 variable "web_plan" {
   type    = string
   default = "starter"
