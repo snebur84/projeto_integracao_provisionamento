@@ -30,6 +30,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: List bootstrap directory (debug)
+        run: |
+          echo "Listing infra/terraform/bootstrap/gcp (if present)"
+          ls -la infra/terraform/bootstrap/gcp || true
+
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v1
         with:
@@ -41,7 +46,7 @@ jobs:
           terraform_version: 1.5.7
 
       - name: Bootstrap - write tfvars
-        working-directory: terraform/bootstrap/gcp
+        working-directory: infra/terraform/bootstrap/gcp
         env:
           ENV_NAME: ${{ github.event.inputs.environment }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
@@ -52,14 +57,14 @@ jobs:
           printf 'gcp_region = "%s"\n' "$GCP_REGION" >> terraform.tfvars
 
       - name: Bootstrap - init and apply
-        working-directory: terraform/bootstrap/gcp
+        working-directory: infra/terraform/bootstrap/gcp
         run: |
           set -euo pipefail
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
       - name: Get bootstrap outputs - save JSON
-        working-directory: terraform/bootstrap/gcp
+        working-directory: infra/terraform/bootstrap/gcp
         id: bootstrap
         run: |
           set -euo pipefail
