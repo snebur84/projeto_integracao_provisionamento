@@ -1,14 +1,14 @@
 output "state_bucket" {
-  description = "Name of the GCS bucket for Terraform state"
+  description = "GCS bucket name for Terraform state"
   value       = google_storage_bucket.terraform_state.name
 }
 
 output "state_bucket_url" {
-  description = "URL of the GCS bucket for Terraform state"
-  value       = google_storage_bucket.terraform_state.url
+  description = "GCS bucket URL for Terraform state"
+  value       = "gs://${google_storage_bucket.terraform_state.name}"
 }
 
 output "region" {
-  description = "GCP region where backend resources are created"
+  description = "Region for bootstrap resources"
   value       = var.region
 }

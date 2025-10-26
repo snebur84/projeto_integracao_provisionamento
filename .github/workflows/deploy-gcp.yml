@@ -193,7 +193,7 @@ jobs:
 
           TF_BUCKET=""
 
-          # 1) Prefer -raw (returns only the value when available)
+          # 1) Prefer -raw (retorna só o valor quando disponível)
           if terraform output -help 2>/dev/null | grep -q '\-raw'; then
             TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
             if [ -z "$TF_BUCKET" ]; then
@@ -201,13 +201,10 @@ jobs:
             fi
           fi
 
-          # 2) Fallback: capture -json output, strip any leading log lines, then parse
+          # 2) Fallback: captura -json, remove linhas antes do primeiro '{' e parseia com jq
           if [ -z "$TF_BUCKET" ]; then
-            # capture output (stdout may contain JSON, stderr captured separately)
             OUT=$(terraform output -json -no-color 2>/tmp/terraform_output.err || true)
-
-            # remove any lines before the first "{" (defensive against wrappers/extra prints)
-            # awk prints from the first line that contains a "{" until EOF
+            # remove qualquer texto anterior ao primeiro '{' (defensivo)
             printf '%s\n' "$OUT" | awk 'BEGIN{p=0} /{/ {p=1} p{print}' > /tmp/terraform_output.json || true
 
             if jq -e . /tmp/terraform_output.json >/dev/null 2>&1; then
@@ -224,7 +221,7 @@ jobs:
 
           if [ -z "$TF_BUCKET" ]; then
             echo "ERROR: could not determine TF_BUCKET from bootstrap outputs."
-            echo "Make sure the bootstrap module defines output 'state_bucket' or 'state_bucket_name'."
+            echo "Make sure the bootstrap module defines output 'state_bucket' (see infra/terraform/bootstrap/gcp/outputs.tf)."
             exit 6
           fi
 
