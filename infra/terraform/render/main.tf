@@ -18,28 +18,22 @@ resource "render_project" "project" {
 }
 
 # Serviço privado que provê Postgres (opcional)
-resource "render_private_service" "postgres" {
+# substituir a definição do Postgres privado por um recurso de banco gerenciado
+# (o nome do recurso pode variar conforme versão do provider; aqui uso render_database como exemplo)
+
+resource "render_database" "postgres" {
   count = var.create_postgres ? 1 : 0
 
-  name = "${local.sanitized_name}-postgres"
+  name         = "${local.sanitized_name}-db"
+  plan         = var.postgres_plan      # setar "free" via var
+  region       = var.region
 
-  # runtime_source como objeto: informamos image_url (sem tag) e tag separadamente
-  runtime_source = {
-    image = {
-      image_url = var.postgres_image_repo
-      tag       = var.postgres_image_tag
-    }
-  }
+  # campos que o provider pode exigir para managed DB:
+  database_name = var.postgres_database
+  user          = var.postgres_user
+  password      = var.postgres_password
 
-  plan   = var.postgres_plan
-  region = var.region
-
-  env_vars = {
-    POSTGRES_DB       = { value = var.postgres_database }
-    POSTGRES_USER     = { value = var.postgres_user }
-    POSTGRES_PASSWORD = { value = var.postgres_password }
-  }
-
+  # se o provider requerer environment/project link:
   environment_id = render_project.project.environments["production"].id
 }
 

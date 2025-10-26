@@ -21,12 +21,8 @@ output "provision_service_name" {
   value       = length(render_web_service.provision) > 0 ? render_web_service.provision[0].name : ""
 }
 
-output "postgres_private_service_id" {
-  description = "ID do serviço privado que executa Postgres (vazio se var.create_postgres=false ou não criado por este run)."
-  value       = length(render_private_service.postgres) > 0 ? render_private_service.postgres[0].id : ""
-}
-
-output "postgres_private_service_name" {
-  description = "Nome do serviço privado Postgres (quando criado via terraform)."
-  value       = length(render_private_service.postgres) > 0 ? render_private_service.postgres[0].name : ""
+output "postgres_database_url" {
+  description = "Connection string do Postgres gerenciado (sensible)."
+  value       = try(render_database.postgres[0].connection_string, "")
+  sensitive   = true
 }

@@ -47,7 +47,7 @@ variable "postgres_image_tag" {
 
 variable "web_plan" {
   type    = string
-  default = "starter"
+  default = "free"
 }
 
 # Código do app (repo + branch) — necessário para runtime_source.docker
