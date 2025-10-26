@@ -186,47 +186,48 @@ jobs:
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      - name: Get bootstrap outputs and export TF_BUCKET (robust)
+      - name: Extract TF_BUCKET from Terraform state (robust)
         working-directory: infra/terraform/bootstrap/gcp
+        env:
+          TF_INPUT: "false"
         run: |
           set -euo pipefail
 
-          TF_BUCKET=""
+          # fallback file names
+          TFSTATE_JSON="/tmp/tfstate.json"
+          TFSTATE_ERR="/tmp/tfstate.err"
 
-          # 1) Prefer -raw (retorna só o valor quando disponível)
-          if terraform output -help 2>/dev/null | grep -q '\-raw'; then
-            TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
-            if [ -z "$TF_BUCKET" ]; then
-              TF_BUCKET=$(terraform output -raw state_bucket_name 2>/dev/null || true)
-            fi
-          fi
+          echo "Pulling Terraform state (canonical JSON) ..."
+          terraform state pull > "$TFSTATE_JSON" 2> "$TFSTATE_ERR" || true
 
-          # 2) Fallback: captura -json, remove linhas antes do primeiro '{' e parseia com jq
-          if [ -z "$TF_BUCKET" ]; then
-            OUT=$(terraform output -json -no-color 2>/tmp/terraform_output.err || true)
-            # remove qualquer texto anterior ao primeiro '{' (defensivo)
-            printf '%s\n' "$OUT" | awk 'BEGIN{p=0} /{/ {p=1} p{print}' > /tmp/terraform_output.json || true
-
-            if jq -e . /tmp/terraform_output.json >/dev/null 2>&1; then
-              echo "Available outputs (bootstrap):"
-              jq -r 'keys[]' /tmp/terraform_output.json || true
-              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.json || true)
-            else
-              echo "ERROR: terraform output -json produced invalid JSON. Stderr (for debug):"
-              sed -n '1,200p' /tmp/terraform_output.err || true
-            fi
-
-            rm -f /tmp/terraform_output.json /tmp/terraform_output.err || true
-          fi
-
-          if [ -z "$TF_BUCKET" ]; then
-            echo "ERROR: could not determine TF_BUCKET from bootstrap outputs."
-            echo "Make sure the bootstrap module defines output 'state_bucket' (see infra/terraform/bootstrap/gcp/outputs.tf)."
+          if ! jq -e . "$TFSTATE_JSON" >/dev/null 2>&1; then
+            echo "ERROR: terraform state pull produced invalid JSON. Stderr (first 200 lines):"
+            sed -n '1,200p' "$TFSTATE_ERR" || true
             exit 6
           fi
 
-          echo "TF_BUCKET=$TF_BUCKET" >> $GITHUB_ENV
-          echo "Exported TF_BUCKET=$TF_BUCKET"
+          # Try outputs first (preferred)
+          TF_BUCKET=$(jq -r '.outputs.state_bucket.value // .outputs.state_bucket_name.value // empty' "$TFSTATE_JSON" || true)
+
+          # If not found in outputs, look for the resource google_storage_bucket.terraform_state
+          if [ -z "${TF_BUCKET}" ]; then
+            TF_BUCKET=$(jq -r '
+              .resources[]?
+              | select(.type == "google_storage_bucket" and (.name == "terraform_state" or .name == "terraform-state" or .name == "state"))
+              | .instances[0].attributes.name // empty
+            ' "$TFSTATE_JSON" | head -n1 || true)
+          fi
+
+          if [ -z "${TF_BUCKET}" ]; then
+            echo "ERROR: Could not determine TF_BUCKET from state. Available output keys (for debug):"
+            jq -r '(.outputs // {}) | keys[]?' "$TFSTATE_JSON" || true
+            echo "Available google_storage_bucket resources (name -> attribute.name):"
+            jq -r '.resources[]? | select(.type=="google_storage_bucket") | (.name + " -> " + (.instances[0].attributes.name // ""))' "$TFSTATE_JSON" || true
+            exit 6
+          fi
+
+          echo "TF_BUCKET=${TF_BUCKET}" >> $GITHUB_ENV
+          echo "Exported TF_BUCKET=${TF_BUCKET}"
 
       - name: Write backend.hcl for GCP infra
         env:
