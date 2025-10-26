@@ -31,7 +31,6 @@ resource "render_postgres" "db" {
 
   database_name = var.postgres_database
   user          = var.postgres_user
-  password      = var.postgres_password
 }
 
 # Serviço web para a aplicação Django (build via Dockerfile no repositório)
