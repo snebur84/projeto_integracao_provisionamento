@@ -186,14 +186,14 @@ jobs:
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
-      - name: Get bootstrap outputs and export TF_BUCKET
+      - name: Get bootstrap outputs and export TF_BUCKET (robust)
         working-directory: infra/terraform/bootstrap/gcp
         run: |
           set -euo pipefail
 
           TF_BUCKET=""
 
-          # Prefer -raw when available to get only the value
+          # 1) Prefer -raw (returns only the value when available)
           if terraform output -help 2>/dev/null | grep -q '\-raw'; then
             TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
             if [ -z "$TF_BUCKET" ]; then
@@ -201,22 +201,25 @@ jobs:
             fi
           fi
 
-          # Fallback: parse -json output safely
+          # 2) Fallback: capture -json output, strip any leading log lines, then parse
           if [ -z "$TF_BUCKET" ]; then
-            terraform output -json -no-color > /tmp/terraform_output.json 2>/tmp/terraform_output.err || true
-            # strip common ANSI escapes if any
-            sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/terraform_output.json > /tmp/terraform_output.clean.json || true
+            # capture output (stdout may contain JSON, stderr captured separately)
+            OUT=$(terraform output -json -no-color 2>/tmp/terraform_output.err || true)
 
-            if jq -e . /tmp/terraform_output.clean.json >/dev/null 2>&1; then
+            # remove any lines before the first "{" (defensive against wrappers/extra prints)
+            # awk prints from the first line that contains a "{" until EOF
+            printf '%s\n' "$OUT" | awk 'BEGIN{p=0} /{/ {p=1} p{print}' > /tmp/terraform_output.json || true
+
+            if jq -e . /tmp/terraform_output.json >/dev/null 2>&1; then
               echo "Available outputs (bootstrap):"
-              jq -r 'keys[]' /tmp/terraform_output.clean.json || true
-              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.clean.json || true)
+              jq -r 'keys[]' /tmp/terraform_output.json || true
+              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.json || true)
             else
-              echo "ERROR: terraform output -json produced invalid JSON. Stderr:"
+              echo "ERROR: terraform output -json produced invalid JSON. Stderr (for debug):"
               sed -n '1,200p' /tmp/terraform_output.err || true
             fi
 
-            rm -f /tmp/terraform_output.json /tmp/terraform_output.clean.json /tmp/terraform_output.err || true
+            rm -f /tmp/terraform_output.json /tmp/terraform_output.err || true
           fi
 
           if [ -z "$TF_BUCKET" ]; then
