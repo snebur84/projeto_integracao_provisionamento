@@ -179,9 +179,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Prefer -raw to get just the value
           TF_BUCKET=""
 
+          # 1) Try terraform output -raw (preferred)
           if terraform output -help 2>/dev/null | grep -q '\-raw'; then
             TF_BUCKET=$(terraform output -raw state_bucket 2>/dev/null || true)
             if [ -z "$TF_BUCKET" ]; then
@@ -189,19 +189,26 @@ jobs:
             fi
           fi
 
-          # fallback to json+jq if -raw not available or didn't return value
+          # 2) Fallback: use -json but strip ANSI/control chars and extract with jq
           if [ -z "$TF_BUCKET" ]; then
-            if terraform output -json -no-color >/tmp/terraform_output.json 2>/tmp/terraform_output.err; then
-              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.json || true)
+            terraform output -json -no-color > /tmp/terraform_output.json 2>/tmp/terraform_output.err || true
+            sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/terraform_output.json > /tmp/terraform_output.clean.json || true
+
+            if jq -e . /tmp/terraform_output.clean.json >/dev/null 2>&1; then
+              echo "Outputs keys available:"
+              jq -r 'keys[]' /tmp/terraform_output.clean.json || true
+              TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // empty)' /tmp/terraform_output.clean.json || true)
             else
-              echo "ERROR: terraform output -json failed. Stderr:"
+              echo "ERROR: terraform output -json produced invalid JSON. Dumping stderr:"
               sed -n '1,200p' /tmp/terraform_output.err || true
             fi
-            rm -f /tmp/terraform_output.json /tmp/terraform_output.err || true
+
+            rm -f /tmp/terraform_output.json /tmp/terraform_output.clean.json /tmp/terraform_output.err || true
           fi
 
           if [ -z "$TF_BUCKET" ]; then
             echo "ERROR: could not determine TF_BUCKET from bootstrap outputs."
+            echo "Make sure the bootstrap module defines output 'state_bucket' or 'state_bucket_name'."
             exit 6
           fi
 
