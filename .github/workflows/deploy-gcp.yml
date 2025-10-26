@@ -93,13 +93,48 @@ jobs:
           terraform output -json > /tmp/bootstrap.json
 
       - name: Export bootstrap outputs as env
+        working-directory: infra/terraform/bootstrap/gcp
+        id: bootstrap
         run: |
           set -euo pipefail
-          TF_BUCKET=$(jq -r '.state_bucket.value' /tmp/bootstrap.json)
-          printf 'TF_BUCKET=%s\n' "$TF_BUCKET" >> $GITHUB_ENV
-        env:
-          GCP_REGION: ${{ secrets.GCP_REGION }}
-          ENV_NAME: ${{ github.event.inputs.environment }}
+
+          BOOT="/tmp/bootstrap.json"
+
+          # Verifica existência e conteúdo
+          if [ ! -f "${BOOT}" ]; then
+            echo "ERROR: ${BOOT} not found. Previous step 'terraform output -json' may have failed."
+            ls -la /tmp || true
+            exit 5
+          fi
+
+          if [ ! -s "${BOOT}" ]; then
+            echo "ERROR: ${BOOT} is empty."
+            echo "Contents (if any):"
+            sed -n '1,200p' "${BOOT}" || true
+            exit 5
+          fi
+
+          # Valida JSON
+          if ! jq -e . "${BOOT}" >/dev/null 2>&1; then
+            echo "ERROR: ${BOOT} is not valid JSON. Dumping contents for debug:"
+            sed -n '1,200p' "${BOOT}" || true
+            exit 5
+          fi
+
+          # Tenta extrair o nome do bucket a partir de várias formas possíveis de outputs
+          TF_BUCKET=$(jq -r '(.state_bucket.value // .state_bucket_name.value // .state_bucket // .state_bucket_name // .state_bucket_name_value // empty)' "${BOOT}")
+
+          if [ -z "${TF_BUCKET}" ]; then
+            echo "ERROR: Não foi possível encontrar o nome do bucket nos outputs."
+            echo "Chaves presentes no JSON:"
+            jq -r 'keys[]' "${BOOT}" || true
+            echo "Conteúdo completo para debug:"
+            sed -n '1,400p' "${BOOT}" || true
+            exit 6
+          fi
+
+          echo "TF_BUCKET=${TF_BUCKET}" >> $GITHUB_ENV
+          echo "Exported TF_BUCKET=${TF_BUCKET}"
 
       - name: Write backend.hcl for GCP infra
         env:
