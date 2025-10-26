@@ -5,19 +5,19 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy (e.g., prod, staging)'
+        description: "Environment to deploy (e.g., prod, staging)"
         required: true
-        default: 'prod'
+        default: prod
       bootstrap:
-        description: 'Run bootstrap apply (creates bootstrap resources)'
+        description: "Run bootstrap apply"
         required: false
-        default: 'false'
+        default: "false"
 
 jobs:
   deploy-gcp:
     runs-on: ubuntu-latest
     env:
-      TF_IN_AUTOMATION: 'true'
+      TF_IN_AUTOMATION: true
 
     steps:
       - name: Checkout repo
@@ -46,9 +46,9 @@ jobs:
       - name: Setup Terraform CLI
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: '1.5.7'
+          terraform_version: "1.5.7"
 
-      - name: Optional: run bootstrap apply (only if requested)
+      - name: Optional bootstrap apply
         if: ${{ github.event.inputs.bootstrap == 'true' }}
         working-directory: infra/terraform/bootstrap/gcp
         env:
@@ -57,7 +57,6 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
         run: |
           set -euo pipefail
-
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
@@ -72,7 +71,6 @@ jobs:
           printf 'region = "%s"\n' "$region" >> terraform.tfvars
           printf 'state_bucket_name = "%s"\n' "$bucket" >> terraform.tfvars
 
-          echo "Running bootstrap terraform init/apply (non-interactive)"
           terraform init -input=false
           terraform apply -auto-approve -input=false
 
@@ -84,7 +82,6 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
         run: |
           set -euo pipefail
-
           env="${ENV_NAME:-prod}"
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
@@ -95,31 +92,21 @@ jobs:
             | sed 's/[^a-z0-9-]/-/g' \
             | cut -c1-63)
 
-          echo "Using bucket name: ${bucket}"
-
           if gsutil ls -b "gs://${bucket}" >/dev/null 2>&1; then
             echo "Bucket gs://${bucket} already exists"
           else
-            echo "Bucket gs://${bucket} not found; attempting to create in project ${project}"
-            if gsutil mb -p "${project}" -l "${region}" "gs://${bucket}"; then
-              echo "Created bucket gs://${bucket}"
-            else
-              echo "ERROR: Failed to create gs://${bucket}"
-              echo "Ensure the service account has storage.buckets.create permission"
-              exit 1
-            fi
+            echo "Creating bucket gs://${bucket}"
+            gsutil mb -p "${project}" -l "${region}" "gs://${bucket}"
           fi
 
           echo "TF_BUCKET=${bucket}" >> $GITHUB_ENV
-          echo "Exported TF_BUCKET=${bucket}"
 
-      - name: Write backend.hcl for infra (gcp)
+      - name: Write backend.hcl for infra
         env:
           TF_BUCKET: ${{ env.TF_BUCKET }}
           ENV_NAME: ${{ github.event.inputs.environment }}
         run: |
           set -euo pipefail
-
           if [ -z "${TF_BUCKET:-}" ]; then
             echo "ERROR: TF_BUCKET not set"
             exit 1
@@ -129,10 +116,9 @@ jobs:
           env="${ENV_NAME:-prod}"
           printf 'bucket = "%s"\n' "${TF_BUCKET}" > infra/terraform/gcp/backend.hcl
           printf 'prefix = "%s"\n' "env/${env}" >> infra/terraform/gcp/backend.hcl
-          echo "Wrote infra backend.hcl (preview):"
           sed -n '1,120p' infra/terraform/gcp/backend.hcl || true
 
-      - name: Write terraform.tfvars for infra (gcp)
+      - name: Write terraform.tfvars for infra
         working-directory: infra/terraform/gcp
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
@@ -142,7 +128,6 @@ jobs:
           TF_BUCKET: ${{ env.TF_BUCKET }}
         run: |
           set -euo pipefail
-
           project="${GCP_PROJECT}"
           region="${GCP_REGION:-us-central1}"
           zone="${GCP_ZONE:-us-central1-a}"
@@ -159,7 +144,6 @@ jobs:
             printf 'state_bucket = "%s"\n' "$bucket" >> terraform.tfvars || true
           fi
 
-          echo "Wrote terraform.tfvars (preview):"
           sed -n '1,120p' terraform.tfvars || true
 
       - name: Terraform init (gcp infra)
@@ -191,45 +175,36 @@ jobs:
           address_name="${instance_name}-ip"
           firewall_name="allow-http-https-${environment}"
 
-          echo "Import step: instance_name=${instance_name}, environment=${environment}"
-          echo "Attempting idempotent import of address='${address_name}' and firewall='${firewall_name}'"
+          echo "Instance name: ${instance_name}"
+          echo "Environment: ${environment}"
+          echo "Address name: ${address_name}"
+          echo "Firewall name: ${firewall_name}"
 
           import_if_missing() {
             local tf_addr="$1"
-            local check_cmd="$2"
+            local exists_cmd="$2"
             local import_id="$3"
 
             if terraform state list 2>/dev/null | grep -q "^${tf_addr}$"; then
-              echo "Skipping import: ${tf_addr} already present in state"
+              echo "Terraform state already contains ${tf_addr}; skipping import"
               return 0
             fi
 
-            if eval "${check_cmd}"; then
-              echo "Found existing GCP resource for ${tf_addr}; attempting terraform import..."
-              if terraform import -no-color "${tf_addr}" "${import_id}"; then
-                echo "Imported ${tf_addr} -> ${import_id}"
-                return 0
-              else
-                echo "Warning: terraform import for ${tf_addr} failed (continuing)."
-                return 1
-              fi
+            if eval "${exists_cmd}"; then
+              echo "Found existing GCP resource for ${tf_addr}; importing..."
+              terraform import -no-color "${tf_addr}" "${import_id}" || echo "Import failed for ${tf_addr} (continuing)"
             else
-              echo "No existing GCP resource found for ${tf_addr} (it will be created by apply)"
-              return 0
+              echo "No GCP resource found for ${tf_addr}; it will be created by apply if needed"
             fi
           }
 
-          import_if_missing \
-            "google_compute_address.provision_ip" \
+          import_if_missing "google_compute_address.provision_ip" \
             "gcloud compute addresses describe '${address_name}' --region='${GCP_REGION}' --project='${GCP_PROJECT}' >/dev/null 2>&1" \
-            "projects/${GCP_PROJECT}/regions/${GCP_REGION}/addresses/${address_name}" || true
+            "projects/${GCP_PROJECT}/regions/${GCP_REGION}/addresses/${address_name}"
 
-          import_if_missing \
-            "google_compute_firewall.allow_http_https" \
+          import_if_missing "google_compute_firewall.allow_http_https" \
             "gcloud compute firewall-rules describe '${firewall_name}' --project='${GCP_PROJECT}' >/dev/null 2>&1" \
-            "projects/${GCP_PROJECT}/global/firewalls/${firewall_name}" || true
-
-          echo "Import step completed."
+            "projects/${GCP_PROJECT}/global/firewalls/${firewall_name}"
 
       - name: Terraform apply (gcp infra)
         working-directory: infra/terraform/gcp
