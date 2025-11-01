@@ -1,6 +1,0 @@
-# Example backend configuration for GCP GCS
-# Copy this file to backend.hcl and fill in the values
-# DO NOT commit backend.hcl with real values to the repository
-
-bucket  = "your-terraform-state-bucket-name"
-prefix  = "prod/terraform.tfstate"
