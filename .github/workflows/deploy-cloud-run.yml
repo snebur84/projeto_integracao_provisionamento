@@ -41,8 +41,10 @@ jobs:
           ref: ${{ github.event.inputs.branch }} 
       
       - name: Clear Conflicting Environment Variable
-        run: echo "GCP_WORKLOAD_IDENTITY_PROVIDER=" >> $GITHUB_ENV
-
+        run: |
+          echo "GCP_WORKLOAD_IDENTITY_PROVIDER=" >> $GITHUB_ENV
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL=" >> $GITHUB_ENV
+          
       - name: Google Auth (Workload Identity)
         id: auth
         uses: google-github-actions/auth@v2
