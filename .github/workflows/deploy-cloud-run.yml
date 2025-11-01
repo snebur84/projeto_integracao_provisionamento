@@ -12,15 +12,15 @@ on:
 
 # Configurações globais usando seus secrets e vars
 env:
+  # O ID do seu projeto (ex: my-project-123)
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
-  GCP_REGION: ${{ secrets.GCP_REGION }}
-  SERVICE_NAME: provision-app
-  # O backend deve ser fixo ou também vir de um secret, mas não pode ser alterado a cada run
-  TF_STATE_BUCKET: tf-state-provision-bucket
-  # Variáveis de Service Account e WIF
+  # O número do seu projeto (ex: 1234567890)
+  GCP_PROJECT_NUMBER: ${{ secrets.GCP_PROJECT_NUMBER }}
+  # O Service Account Email (ex: terraform-sa@...)
   WIF_SA_EMAIL: ${{ vars.GCP_SA_EMAIL }}
-  # Constrói o identificador completo do provedor WIF
-  WIF_PROVIDER_ID: projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-pool/providers/${{ vars.GCP_WIF_PROVIDER }}
+  # O nome do provedor, tipicamente 'github-provider'
+  GCP_WIF_PROVIDER_NAME: ${{ vars.GCP_WIF_PROVIDER }}
+  WIF_PROVIDER_FULL_ID: projects/${{ secrets.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github-pool/providers/${{ vars.GCP_WIF_PROVIDER }}
 
 jobs:
   # ---------------------------------------------------------------------
