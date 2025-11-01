@@ -10,7 +10,7 @@ on:
       branch:
         description: 'Branch to deploy'
         required: true
-        default: 'gcp-deploy'
+        default: 'main
 
 # Configurações globais usando seus secrets e vars
 env:
