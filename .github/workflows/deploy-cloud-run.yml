@@ -1,7 +1,10 @@
 ---
+# .github/workflows/deploy.yml
+
 name: Provision App CI/CD to Cloud Run
 
 on:
+  # Permite o deploy manual via UI do GitHub, controlando a branch
   workflow_dispatch:
     inputs:
       branch:
@@ -11,40 +14,45 @@ on:
 
 # Configurações globais usando seus secrets e vars
 env:
+  # Informações básicas do projeto/ambiente
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
   GCP_REGION: ${{ secrets.GCP_REGION }}
   SERVICE_NAME: provision-app
+  
+  # Service Account (SA) de uso geral
   WIF_SA_EMAIL: ${{ vars.GCP_SA_EMAIL }}
-  TF_STATE_BUCKET: tf-state-provision-bucket
+  
+  # Backend do Terraform
+  TF_STATE_BUCKET: tf-state-provision-bucket # Deve ser o nome único do seu bucket de estado
 
 jobs:
   # ---------------------------------------------------------------------
-  # 1. INFRASTRUCTURE
+  # 1. INFRASTRUCTURE (Provisiona/Atualiza a infraestrutura via Terraform)
   # ---------------------------------------------------------------------
   infrastructure:
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
-      id-token: 'write'
+      id-token: 'write' # Necessário para o WIF
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
-
+          ref: ${{ github.event.inputs.branch }} 
+      
       - name: Google Auth (Workload Identity)
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          # CORREÇÃO: Usa o Secret que contém o ID limpo e completo do WIF para evitar a duplicação
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          # CORREÇÃO: Usa o Secret único com a string WIF no formato limpo: projects/.../providers/...
+          workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }} 
           service_account: ${{ env.WIF_SA_EMAIL }}
-
+          
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           cli_config_credentials_token: ${{ steps.auth.outputs.access_token }}
-
+          
       - name: Terraform Init
         run: terraform init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
         working-directory: infra/gcp
@@ -54,6 +62,7 @@ jobs:
         run: terraform apply -auto-approve -input=false -json
         working-directory: infra/gcp
         env:
+          # Variáveis do Terraform (necessárias para os arquivos .tf)
           TF_VAR_gcp_project_id: ${{ env.GCP_PROJECT_ID }}
           TF_VAR_gcp_region: ${{ env.GCP_REGION }}
           TF_VAR_app_name: ${{ env.SERVICE_NAME }}
@@ -61,12 +70,14 @@ jobs:
       - name: Get Terraform Outputs
         id: outputs
         run: |
+          # Você precisa adicionar 'gcs_bucket_name' como uma saída no seu terraform
+          # Ex: output "gcs_bucket_name" { value = google_storage_bucket.static_files.name }
           BUCKET_NAME=$(terraform output -raw gcs_bucket_name)
           echo "GCS_BUCKET_NAME=$BUCKET_NAME" >> $GITHUB_ENV
         working-directory: infra/gcp
-
+      
   # ---------------------------------------------------------------------
-  # 2. BUILD
+  # 2. BUILD (Cria a imagem Docker e envia para o Artifact Registry)
   # ---------------------------------------------------------------------
   build:
     needs: [infrastructure]
@@ -78,15 +89,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
-
+          ref: ${{ github.event.inputs.branch }} 
+        
       - name: Google Auth (Workload Identity)
         id: auth-build
         uses: google-github-actions/auth@v2
         with:
+          # CORREÇÃO: Usa o Secret único com a string WIF no formato limpo
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
           service_account: ${{ env.WIF_SA_EMAIL }}
-
+          
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -96,12 +108,12 @@ jobs:
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: . # Assume que o Dockerfile está na raiz do repositório
           push: true
           tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}-repo/${{ env.SERVICE_NAME }}:latest
-
+          
   # ---------------------------------------------------------------------
-  # 3. DEPLOY
+  # 3. DEPLOY (Atualiza o serviço Cloud Run com a nova imagem)
   # ---------------------------------------------------------------------
   deploy:
     needs: [build]
@@ -113,12 +125,15 @@ jobs:
       - name: Google Auth (Workload Identity)
         uses: google-github-actions/auth@v2
         with:
+          # CORREÇÃO: Usa o Secret único com a string WIF no formato limpo
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
           service_account: ${{ env.WIF_SA_EMAIL }}
-
+      
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.GCP_REGION }}
+          # O Terraform já definiu todas as variáveis de ambiente e secrets.
+          # Este passo apenas atualiza a imagem do contêiner.
           image: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}-repo/${{ env.SERVICE_NAME }}:latest
