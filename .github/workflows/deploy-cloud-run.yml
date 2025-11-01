@@ -33,18 +33,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
-      id-token: 'write' # Necessário para o WIF
+      id-token: 'write' 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }} 
       
+      - name: Clear Conflicting Environment Variable
+        run: echo "GCP_WORKLOAD_IDENTITY_PROVIDER=" >> $GITHUB_ENV
+
       - name: Google Auth (Workload Identity)
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          # CORREÇÃO: Usa o Secret único com a string WIF no formato limpo: projects/.../providers/...
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }} 
           service_account: ${{ env.WIF_SA_EMAIL }}
           
