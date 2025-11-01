@@ -4,9 +4,14 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Variável de ambiente PORT é injetada pelo Cloud Run. Usamos 8080 como fallback.
+ARG PORT=8080
+ENV PORT=${PORT}
+
 # Instala dependências de sistema
+# Removendo netcat-openbsd (assumindo que o entrypoint não espera mais por DBs locais)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential gcc libpq-dev curl netcat-openbsd \
+    && apt-get install -y --no-install-recommends build-essential gcc libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/app/provision
@@ -28,8 +33,9 @@ RUN chmod +x /app/scripts/create_superuser.py
 
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Porta interna do gunicorn
-EXPOSE 8000
+# A porta 8080 é a porta padrão que o Cloud Run espera
+EXPOSE 8080
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["gunicorn", "provision.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
+# CRÍTICO: Usa a variável de ambiente $PORT injetada pelo Cloud Run
+CMD ["gunicorn", "provision.wsgi:application", "--bind", "0.0.0.0:${PORT}", "--workers", "3"]

@@ -2,11 +2,13 @@
 .env
 venv
 *__pycache__/
+*/app/provision/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 deploy_old
 */*/*.old
+app/provision/provision/settings.py.old
 
 # Terraform
 .terraform/
