@@ -1,8 +1,7 @@
 # ---------------------------------------------------------------------
-# 1. ARTIFACT REGISTRY E GCS BUCKET (Para estáticos/mídia)
+# 1. ARTIFACT REGISTRY E GCS BUCKET
 # ---------------------------------------------------------------------
 
-# Repositório para armazenar a imagem Docker da aplicação
 resource "google_artifact_registry_repository" "repo" {
   location      = var.gcp_region
   repository_id = "${var.app_name}-repo"
@@ -10,7 +9,6 @@ resource "google_artifact_registry_repository" "repo" {
   format        = "DOCKER"
 }
 
-# Bucket do Google Cloud Storage para servir arquivos estáticos e de mídia
 resource "google_storage_bucket" "static_files" {
   name          = "${var.app_name}-static-files-${var.gcp_project_id}" 
   project       = var.gcp_project_id
@@ -27,7 +25,6 @@ resource "google_storage_bucket" "static_files" {
   }
 }
 
-# Politica de IAM para leitura pública do bucket (Necessário para Static Files)
 resource "google_storage_bucket_iam_member" "public_reader" {
   bucket = google_storage_bucket.static_files.name
   role   = "organizations/825417857245/roles/gcp-storage-legacyObjectReader"
@@ -36,18 +33,17 @@ resource "google_storage_bucket_iam_member" "public_reader" {
 
 
 # ---------------------------------------------------------------------
-# 2. CLOUD RUN SERVICE (Agora com injeção de segredos)
+# 2. CLOUD RUN SERVICE (Com injeção de segredos)
 # ---------------------------------------------------------------------
 
-# Serviço Cloud Run
 resource "google_cloud_run_v2_service" "app_service" {
   name     = var.app_name
   location = var.gcp_region
   project  = var.gcp_project_id
 
   template {
-    # Referência ao Service Account, usado no secrets.tf para IAM
-    service_account = "sa-${var.app_name}@${var.gcp_project_id}.iam.gserviceaccount.com" # Exemplo de SA customizado
+    # Referência ao Service Account criado em secrets.tf
+    service_account = google_service_account.cloud_run_sa.email
 
     containers {
       image = "${google_artifact_registry_repository.repo.location}-docker.pkg.dev/${var.gcp_project_id}/${google_artifact_registry_repository.repo.repository_id}/${var.app_name}:latest" 
@@ -60,30 +56,29 @@ resource "google_cloud_run_v2_service" "app_service" {
       
       # INJEÇÃO DE VARIÁVEIS DE AMBIENTE E SECRETS
       env = [
-        # Variáveis de Configuração Direta
         {
           name  = "DJANGO_DEBUG"
-          value = "0" # Sempre desativado em produção
+          value = "0"
         },
         {
           name  = "DJANGO_ALLOWED_HOSTS"
-          value = "*.run.app,127.0.0.1" # Adicione domínios customizados aqui
+          value = "*.run.app,127.0.0.1"
         },
         {
           name  = "CLOUD_SQL_INSTANCE_CONNECTION_NAME"
-          value = google_sql_database_instance.mysql_instance.connection_name # Saída do main.tf
+          value = google_sql_database_instance.mysql_instance.connection_name # Assumindo que esta variável está definida em main.tf
         },
         {
           name  = "MYSQL_DATABASE"
-          value = "provision_db" # Valor fixo (definido no main.tf)
+          value = "provision_db" 
         },
         {
           name  = "MYSQL_USER"
-          value = "provision_user" # Valor fixo (definido no main.tf)
+          value = "provision_user" 
         },
         {
           name  = "GS_BUCKET_NAME"
-          value = google_storage_bucket.static_files.name # Saída do cloud_run.tf
+          value = google_storage_bucket.static_files.name
         },
 
         # Variáveis injetadas do Secret Manager
@@ -106,7 +101,7 @@ resource "google_cloud_run_v2_service" "app_service" {
           }
         },
         {
-          name  = "MONGODB_URI"
+          name  = "MONGODB_URL" # NOVO: Injeção da URL do MongoDB
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.mongodb_uri.secret_id
@@ -119,7 +114,7 @@ resource "google_cloud_run_v2_service" "app_service" {
     
     # Conexão ao VPC Access Connector 
     vpc_access {
-      connector = google_vpc_access_connector.vpc_connector.id
+      connector = google_vpc_access_connector.vpc_connector.id # Assumindo que esta variável está definida em main.tf
       egress    = "ALL_TRAFFIC" 
     }
 
@@ -142,16 +137,9 @@ resource "google_cloud_run_v2_service" "app_service" {
   }
 }
 
-# Permite acesso não autenticado (público) ao serviço Cloud Run
 resource "google_cloud_run_v2_service_iam_member" "public_access" {
   location = google_cloud_run_v2_service.app_service.location
   name     = google_cloud_run_v2_service.app_service.name
   role     = "roles/run.invoker"
   member   = "allUsers"
-}
-
-# Cria um Service Account customizado (opcional, mas recomendado para IAM seguro)
-resource "google_service_account" "cloud_run_sa" {
-  account_id   = "sa-${var.app_name}"
-  display_name = "Service Account for ${var.app_name} Cloud Run"
 }

@@ -2,7 +2,6 @@
 name: Provision App CI/CD to Cloud Run
 
 on:
-  # Permite o deploy manual via UI do GitHub, controlando a branch
   workflow_dispatch:
     inputs:
       branch:
@@ -20,7 +19,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
-  # 1. INFRASTRUCTURE (Provisiona/Atualiza a infraestrutura via Terraform)
+  # 1. INFRASTRUCTURE
   # ---------------------------------------------------------------------
   infrastructure:
     runs-on: ubuntu-latest
@@ -32,16 +31,20 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
+
       - name: Google Auth (Workload Identity)
         id: auth
         uses: google-github-actions/auth@v2
         with:
+          # CORREÇÃO: Usa o Secret que contém o ID limpo e completo do WIF para evitar a duplicação
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
           service_account: ${{ env.WIF_SA_EMAIL }}
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           cli_config_credentials_token: ${{ steps.auth.outputs.access_token }}
+
       - name: Terraform Init
         run: terraform init -backend-config="bucket=${{ env.TF_STATE_BUCKET }}"
         working-directory: infra/gcp
@@ -61,8 +64,9 @@ jobs:
           BUCKET_NAME=$(terraform output -raw gcs_bucket_name)
           echo "GCS_BUCKET_NAME=$BUCKET_NAME" >> $GITHUB_ENV
         working-directory: infra/gcp
+
   # ---------------------------------------------------------------------
-  # 2. BUILD (Cria a imagem Docker e envia para o Artifact Registry)
+  # 2. BUILD
   # ---------------------------------------------------------------------
   build:
     needs: [infrastructure]
@@ -75,25 +79,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
+
       - name: Google Auth (Workload Identity)
         id: auth-build
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
           service_account: ${{ env.WIF_SA_EMAIL }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Configure Docker to Artifact Registry
         run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.SERVICE_NAME }}-repo/${{ env.SERVICE_NAME }}:latest
+
   # ---------------------------------------------------------------------
-  # 3. DEPLOY (Atualiza o serviço Cloud Run com a nova imagem)
+  # 3. DEPLOY
   # ---------------------------------------------------------------------
   deploy:
     needs: [build]
@@ -107,6 +115,7 @@ jobs:
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
           service_account: ${{ env.WIF_SA_EMAIL }}
+
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
