@@ -6,11 +6,6 @@ name: Provision App CI/CD to Cloud Run
 on:
   # Permite o deploy manual via UI do GitHub, controlando a branch
   workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Branch to deploy'
-        required: true
-        default: 'main
 
 # Configurações globais usando seus secrets e vars
 env:
