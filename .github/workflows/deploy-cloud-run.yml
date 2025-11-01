@@ -37,7 +37,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           # CORREÇÃO: Usa o Secret que contém o ID limpo e completo do WIF para evitar a duplicação
-          workload_identity_provider: ${{ secrets.GCP_WIF_AUDIENCE_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ env.WIF_SA_EMAIL }}
 
       - name: Setup Terraform
